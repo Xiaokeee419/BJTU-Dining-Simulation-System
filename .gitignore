@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+target/
+
+.idea/
+.vscode/
+
+*.log
+*.class
+*.jar
+*.war
+
+.env
+.env.*
+!.env.example
