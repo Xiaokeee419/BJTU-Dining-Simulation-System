@@ -2,6 +2,8 @@ node_modules/
 dist/
 build/
 target/
+.m2/
+.DS_Store
 
 .idea/
 .vscode/
