@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS restaurant (
     KEY idx_restaurant_status (status),
     KEY idx_restaurant_name (name),
     CONSTRAINT chk_restaurant_capacity_non_negative CHECK (capacity >= 0),
-    CONSTRAINT chk_restaurant_score_range CHECK (score >= 0.00 AND score <= 5.00)
+    CONSTRAINT chk_restaurant_score_range CHECK (score >= 0.00 AND score <= 5.00),
+    CONSTRAINT chk_restaurant_status_valid CHECK (status IN ('OPEN', 'CLOSED', 'RESTING'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Restaurant base information';
 
 CREATE TABLE IF NOT EXISTS dining_window (
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS dining_window (
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
     CONSTRAINT chk_dining_window_service_time_non_negative CHECK (avg_service_time >= 0),
-    CONSTRAINT chk_dining_window_score_range CHECK (score >= 0.00 AND score <= 5.00)
+    CONSTRAINT chk_dining_window_score_range CHECK (score >= 0.00 AND score <= 5.00),
+    CONSTRAINT chk_dining_window_status_valid CHECK (status IN ('OPEN', 'CLOSED', 'RESTING'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Restaurant dining window information';
 
 CREATE TABLE IF NOT EXISTS dish (
@@ -69,6 +71,6 @@ CREATE TABLE IF NOT EXISTS dish (
         ON DELETE RESTRICT,
     CONSTRAINT chk_dish_price_non_negative CHECK (price >= 0.00),
     CONSTRAINT chk_dish_stock_non_negative CHECK (stock >= 0),
-    CONSTRAINT chk_dish_score_range CHECK (score >= 0.00 AND score <= 5.00)
+    CONSTRAINT chk_dish_score_range CHECK (score >= 0.00 AND score <= 5.00),
+    CONSTRAINT chk_dish_tags_array CHECK (JSON_TYPE(tags) = 'ARRAY')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='Dish base information and stock';
-
