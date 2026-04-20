@@ -26,3 +26,9 @@ mybatis-plus:
 logging:
   level:
     root: info
+
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:bjtu-dining-simulation-system-jwt-secret-key-2026}
+      expire-seconds: ${JWT_EXPIRE_SECONDS:7200}
