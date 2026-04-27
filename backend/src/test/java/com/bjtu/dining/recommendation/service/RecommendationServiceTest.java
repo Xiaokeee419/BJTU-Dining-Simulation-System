@@ -1,0 +1,86 @@
+package com.bjtu.dining.recommendation.service;
+
+import com.bjtu.dining.common.ApiException;
+import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
+import com.bjtu.dining.recommendation.dto.UserProfileRequest;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+@SpringBootTest
+class RecommendationServiceTest {
+
+    @Autowired
+    private RecommendationService recommendationService;
+
+    @Test
+    void generateReturnsRestaurantWindowAndDishRecommendations() {
+        var request = new RecommendationGenerateRequest(
+                10001L,
+                30,
+                new UserProfileRequest("STUDENT", List.of("偏辣", "米饭"), 10.0, 20.0, 10),
+                3
+        );
+
+        var result = recommendationService.generate(request);
+
+        assertThat(result.runId()).isEqualTo(10001L);
+        assertThat(result.minute()).isEqualTo(30);
+        assertThat(result.restaurants()).hasSize(3);
+        assertThat(result.windows()).hasSize(3);
+        assertThat(result.dishes()).hasSize(3);
+        assertThat(result.windows()).isSortedAccordingTo((a, b) -> Double.compare(b.score(), a.score()));
+        assertThat(result.windows().get(0).rank()).isEqualTo(1);
+        assertThat(result.dishes().get(0).reason()).contains("预计");
+        assertThat(result.diversionSuggestion()).isNotBlank();
+    }
+
+    @Test
+    void getGeneratedReturnsLatestGeneratedResult() {
+        var request = new RecommendationGenerateRequest(
+                10002L,
+                null,
+                new UserProfileRequest("HURRY", List.of("快餐", "米饭"), 8.0, 22.0, 8),
+                2
+        );
+
+        var generated = recommendationService.generate(request);
+        var found = recommendationService.getGenerated(10002L, null);
+
+        assertThat(found).isEqualTo(generated);
+        assertThat(found.windows()).hasSize(2);
+    }
+
+    @Test
+    void generateRejectsInvalidLimit() {
+        var request = new RecommendationGenerateRequest(
+                10001L,
+                30,
+                new UserProfileRequest("STUDENT", List.of("偏辣"), 10.0, 20.0, 10),
+                11
+        );
+
+        assertThatThrownBy(() -> recommendationService.generate(request))
+                .isInstanceOf(ApiException.class)
+                .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40001));
+    }
+
+    @Test
+    void generateRejectsInvalidBudgetRange() {
+        var request = new RecommendationGenerateRequest(
+                10001L,
+                30,
+                new UserProfileRequest("STUDENT", List.of("偏辣"), 25.0, 10.0, 10),
+                3
+        );
+
+        assertThatThrownBy(() -> recommendationService.generate(request))
+                .isInstanceOf(ApiException.class)
+                .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40001));
+    }
+}
