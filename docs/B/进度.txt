@@ -1,0 +1,51 @@
+当前项目结构：
+- 后端工程在 backend/，Spring Boot 3.2.5 + Java 17。
+- B 模块代码集中在 backend/src/main/java/com/bjtu/dining/recommendation/。
+- A 模块种子数据在 data/task-a/*.csv。
+- 当前未接入真实 A 仿真接口，MockSimulationProvider 会按 runId 生成可复现的内存仿真快照。
+
+已完成内容：
+- feature/b-recommendation-api：
+  - POST /api/v1/recommendations/generate 已实现。
+  - GET /api/v1/recommendations/runs/{runId} 已实现。
+  - 已支持 runId、minute、profile、limit 请求字段。
+  - limit 默认 3，最大 10；minute 为空时使用最后时间点。
+  - 已读取指定时间点仿真快照，以及餐厅、窗口、菜品 CSV 参数。
+  - 已计算餐厅、窗口、菜品推荐分数，并按分数降序生成 rank。
+  - 已返回中文 reason、diversionSuggestion 和 generatedAt。
+  - 已通过内存 RecommendationStore 保存推荐结果，支持按 runId/minute 查询。
+  - 已补服务层测试覆盖生成推荐、查询推荐、默认 minute/limit、非法 limit、非法预算范围和未生成查询错误。
+
+验证情况：
+- mvn test 未执行：当前机器 PATH 中没有 mvn，仓库也没有 mvnw。
+- 已执行 javac 编译：
+  - backend/src/main/java 全量编译通过。
+  - backend/src/test/java 全量编译通过。
+- 已执行临时 smoke test：
+  - 推荐生成返回 restaurants/windows/dishes 各 3 条。
+  - 推荐结果有 generatedAt、diversionSuggestion、rank 和中文 reason。
+  - minute 为空时返回最后时间点 minute=60。
+  - limit 为空时默认返回 3 条。
+  - limit=11 正确返回 40001。
+  - 按 runId/minute 可查回已生成结果。
+
+目前 bug：
+- 本机未安装 Maven，无法执行标准 mvn test。
+- MockSimulationProvider 目前会为任意正数 runId 生成仿真结果；真实 A 接口接入前，runId 不存在只能通过非正数模拟 40401。
+
+下一步任务：
+- 开发 feature/b-diversion-strategy：
+  - 新增 POST /api/v1/recommendations/diversion。
+  - 定义 runId、minute、targetCrowdLevel 请求 DTO。
+  - 找出拥挤或极端拥挤的来源窗口。
+  - 找出等待时间较短、拥挤度较低、营业中的目标窗口。
+  - 计算 suggestedUserCount 并生成中文 reason。
+  - 没有合适目标时返回空 suggestions 和可解释 reason。
+
+注意事项：
+- 接口成功响应继续使用 ApiResponse.ok，code=0。
+- 错误响应继续走 ApiException + GlobalExceptionHandler。
+- 后续真实 A 接口完成后，应替换 MockSimulationProvider。
+
+下一次给 Codex 的 prompt：
+请继续开发 B 模块的第二个 feature：feature/b-diversion-strategy。项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。先切换到 feature/b-diversion-strategy，然后阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md 和 docs/public/接口规范.md，按现有 RecommendationController/RecommendationService/ApiResponse 风格实现 POST /api/v1/recommendations/diversion，补 DTO、Service 逻辑和测试。当前机器没有 mvn，可先用 javac 和临时 smoke test 验证。

@@ -57,6 +57,30 @@ class RecommendationServiceTest {
     }
 
     @Test
+    void generateUsesLatestMinuteAndDefaultLimit() {
+        var request = new RecommendationGenerateRequest(
+                10003L,
+                null,
+                new UserProfileRequest("STUDENT", List.of("米饭"), 10.0, 20.0, 10),
+                null
+        );
+
+        var result = recommendationService.generate(request);
+
+        assertThat(result.minute()).isEqualTo(60);
+        assertThat(result.restaurants()).hasSize(3);
+        assertThat(result.windows()).hasSize(3);
+        assertThat(result.dishes()).hasSize(3);
+    }
+
+    @Test
+    void getGeneratedRejectsMissingResult() {
+        assertThatThrownBy(() -> recommendationService.getGenerated(90909L, 30))
+                .isInstanceOf(ApiException.class)
+                .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40400));
+    }
+
+    @Test
     void generateRejectsInvalidLimit() {
         var request = new RecommendationGenerateRequest(
                 10001L,
