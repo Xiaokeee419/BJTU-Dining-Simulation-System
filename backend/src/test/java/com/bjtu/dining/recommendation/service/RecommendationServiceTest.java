@@ -1,6 +1,7 @@
 package com.bjtu.dining.recommendation.service;
 
 import com.bjtu.dining.common.ApiException;
+import com.bjtu.dining.recommendation.dto.DiversionRequest;
 import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
 import com.bjtu.dining.recommendation.dto.UserProfileRequest;
 import org.junit.jupiter.api.Test;
@@ -106,5 +107,24 @@ class RecommendationServiceTest {
         assertThatThrownBy(() -> recommendationService.generate(request))
                 .isInstanceOf(ApiException.class)
                 .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40001));
+    }
+
+    @Test
+    void generateDiversionReturnsSuggestionsForCrowdedWindows() {
+        var result = recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "NORMAL"));
+
+        assertThat(result.runId()).isEqualTo(10001L);
+        assertThat(result.minute()).isEqualTo(30);
+        assertThat(result.reason()).contains("分流建议");
+        assertThat(result.suggestions()).isNotEmpty();
+        assertThat(result.suggestions().get(0).suggestedUserCount()).isPositive();
+        assertThat(result.suggestions().get(0).reason()).contains("建议分流");
+    }
+
+    @Test
+    void generateDiversionRejectsInvalidTargetCrowdLevel() {
+        assertThatThrownBy(() -> recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "HOT")))
+                .isInstanceOf(ApiException.class)
+                .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40002));
     }
 }

@@ -1,6 +1,8 @@
 package com.bjtu.dining.recommendation.controller;
 
 import com.bjtu.dining.common.ApiResponse;
+import com.bjtu.dining.recommendation.dto.DiversionRequest;
+import com.bjtu.dining.recommendation.dto.DiversionResult;
 import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
 import com.bjtu.dining.recommendation.dto.RecommendationResult;
 import com.bjtu.dining.recommendation.service.RecommendationService;
@@ -36,5 +38,10 @@ public class RecommendationController {
             @RequestParam(required = false) Integer minute
     ) {
         return ApiResponse.ok(recommendationService.getGenerated(runId, minute));
+    }
+
+    @PostMapping("/diversion")
+    public ApiResponse<DiversionResult> diversion(@Valid @RequestBody DiversionRequest request) {
+        return ApiResponse.ok(recommendationService.generateDiversion(request));
     }
 }

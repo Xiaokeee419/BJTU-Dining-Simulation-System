@@ -1,6 +1,9 @@
 package com.bjtu.dining.recommendation.service;
 
 import com.bjtu.dining.common.ApiException;
+import com.bjtu.dining.recommendation.dto.DiversionRequest;
+import com.bjtu.dining.recommendation.dto.DiversionResult;
+import com.bjtu.dining.recommendation.dto.DiversionSuggestionItem;
 import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
 import com.bjtu.dining.recommendation.dto.RecommendationItem;
 import com.bjtu.dining.recommendation.dto.RecommendationResult;
@@ -20,9 +23,12 @@ import org.springframework.stereotype.Service;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 @Service
@@ -49,11 +55,7 @@ public class RecommendationService {
         int limit = resolveLimit(request.limit());
         validateProfile(request.profile());
 
-        SimulationRunResult simulation = simulationProvider.findByRunId(request.runId());
-        if (!"FINISHED".equals(simulation.status())) {
-            throw new ApiException(40901, "仿真尚未完成，无法生成推荐", HttpStatus.CONFLICT);
-        }
-
+        SimulationRunResult simulation = loadFinishedSimulation(request.runId());
         SimulationTimePoint timePoint = selectTimePoint(simulation, request.minute());
         Set<String> preferredTags = TagMatcher.normalize(request.profile().tasteTags());
         Map<Long, WindowSnapshot> windowStateById = indexWindowState(timePoint);
@@ -90,6 +92,70 @@ public class RecommendationService {
         }
         return recommendationStore.find(runId, minute)
                 .orElseThrow(() -> new ApiException(40400, "推荐结果不存在，请先调用生成推荐接口", HttpStatus.NOT_FOUND));
+    }
+
+    public DiversionResult generateDiversion(DiversionRequest request) {
+        String targetCrowdLevel = validateCrowdLevel(request.targetCrowdLevel());
+        SimulationRunResult simulation = loadFinishedSimulation(request.runId());
+        SimulationTimePoint timePoint = selectTimePoint(simulation, request.minute());
+
+        List<WindowDiversionCandidate> sources = findSourceWindows(timePoint, targetCrowdLevel);
+        if (sources.isEmpty()) {
+            return new DiversionResult(
+                    request.runId(),
+                    timePoint.minute(),
+                    List.of(),
+                    "当前没有超过目标拥挤度 " + targetCrowdLevel + " 的拥挤窗口，暂不需要分流。"
+            );
+        }
+
+        List<WindowDiversionCandidate> targets = findTargetWindows(timePoint, targetCrowdLevel);
+        if (targets.isEmpty()) {
+            return new DiversionResult(
+                    request.runId(),
+                    timePoint.minute(),
+                    List.of(),
+                    "存在拥挤窗口，但没有等待时间更短且拥挤度不高于 " + targetCrowdLevel + " 的营业目标窗口。"
+            );
+        }
+
+        List<DiversionSuggestionItem> suggestions = new ArrayList<>();
+        Set<Long> usedTargets = new HashSet<>();
+        for (WindowDiversionCandidate source : sources) {
+            Optional<WindowDiversionCandidate> target = targets.stream()
+                    .filter(candidate -> !candidate.windowId().equals(source.windowId()))
+                    .filter(candidate -> !usedTargets.contains(candidate.windowId()))
+                    .filter(candidate -> candidate.waitMinutes() < source.waitMinutes())
+                    .filter(candidate -> targetRemainingCapacity(candidate, targetCrowdLevel) > 0)
+                    .max(Comparator.comparingDouble(candidate -> diversionTargetScore(source, candidate)));
+            if (target.isEmpty()) {
+                continue;
+            }
+
+            WindowDiversionCandidate selectedTarget = target.get();
+            int suggestedUserCount = suggestedUserCount(source, selectedTarget, targetCrowdLevel);
+            if (suggestedUserCount <= 0) {
+                continue;
+            }
+
+            usedTargets.add(selectedTarget.windowId());
+            suggestions.add(new DiversionSuggestionItem(
+                    source.restaurantId(),
+                    source.windowId(),
+                    selectedTarget.restaurantId(),
+                    selectedTarget.windowId(),
+                    suggestedUserCount,
+                    diversionReason(source, selectedTarget, suggestedUserCount)
+            ));
+            if (suggestions.size() >= 10) {
+                break;
+            }
+        }
+
+        String reason = suggestions.isEmpty()
+                ? "存在拥挤窗口，但暂未找到可承接分流人数的低拥挤营业窗口。"
+                : "已生成 " + suggestions.size() + " 条分流建议，目标拥挤度不高于 " + targetCrowdLevel + "。";
+        return new DiversionResult(request.runId(), timePoint.minute(), suggestions, reason);
     }
 
     private List<RecommendationItem> buildRestaurantRecommendations(
@@ -221,6 +287,114 @@ public class RecommendationService {
                 .findFirst()
                 .orElseThrow(() -> new ApiException(40001, "参数校验失败", HttpStatus.BAD_REQUEST,
                         Map.of("field", "minute", "reason", "指定 minute 不存在")));
+    }
+
+    private SimulationRunResult loadFinishedSimulation(Long runId) {
+        SimulationRunResult simulation = simulationProvider.findByRunId(runId);
+        if (!"FINISHED".equals(simulation.status())) {
+            throw new ApiException(40901, "仿真尚未完成，无法生成推荐", HttpStatus.CONFLICT);
+        }
+        return simulation;
+    }
+
+    private String validateCrowdLevel(String crowdLevel) {
+        String normalized = crowdLevel == null ? "" : crowdLevel.trim().toUpperCase(Locale.ROOT);
+        Set<String> validCrowdLevels = Set.of("IDLE", "NORMAL", "BUSY", "EXTREME");
+        if (!validCrowdLevels.contains(normalized)) {
+            throw new ApiException(40002, "枚举值非法", HttpStatus.BAD_REQUEST,
+                    Map.of("field", "targetCrowdLevel", "reason", "targetCrowdLevel 不在允许范围内"));
+        }
+        return normalized;
+    }
+
+    private List<WindowDiversionCandidate> findSourceWindows(SimulationTimePoint timePoint, String targetCrowdLevel) {
+        int targetWeight = crowdWeight(targetCrowdLevel);
+        List<WindowDiversionCandidate> sources = new ArrayList<>();
+        for (RestaurantSnapshot restaurant : timePoint.restaurants()) {
+            for (WindowSnapshot window : restaurant.windows()) {
+                WindowParameter parameter = seedRepository.window(window.windowId());
+                boolean crowded = "BUSY".equals(window.crowdLevel()) || "EXTREME".equals(window.crowdLevel());
+                if (parameter != null && crowded && crowdWeight(window.crowdLevel()) > targetWeight
+                        && "OPEN".equals(window.status()) && "OPEN".equals(parameter.status())) {
+                    sources.add(new WindowDiversionCandidate(restaurant, window, parameter));
+                }
+            }
+        }
+        return sources.stream()
+                .sorted(Comparator.comparingInt(WindowDiversionCandidate::waitMinutes).reversed())
+                .toList();
+    }
+
+    private List<WindowDiversionCandidate> findTargetWindows(SimulationTimePoint timePoint, String targetCrowdLevel) {
+        int targetWeight = crowdWeight(targetCrowdLevel);
+        List<WindowDiversionCandidate> targets = new ArrayList<>();
+        for (RestaurantSnapshot restaurant : timePoint.restaurants()) {
+            for (WindowSnapshot window : restaurant.windows()) {
+                WindowParameter parameter = seedRepository.window(window.windowId());
+                if (parameter != null
+                        && "OPEN".equals(window.status())
+                        && "OPEN".equals(parameter.status())
+                        && crowdWeight(window.crowdLevel()) <= targetWeight) {
+                    targets.add(new WindowDiversionCandidate(restaurant, window, parameter));
+                }
+            }
+        }
+        return targets;
+    }
+
+    private double diversionTargetScore(WindowDiversionCandidate source, WindowDiversionCandidate target) {
+        double waitGap = Math.max(0, source.waitMinutes() - target.waitMinutes()) * 4.0;
+        double tagScore = windowTagSimilarity(source, target);
+        double crowdScore = 20.0 - crowdWeight(target.crowdLevel()) * 4.0;
+        double serviceScore = Math.min(20.0, target.serviceRatePerMinute() * 8.0);
+        return waitGap * 0.45 + tagScore * 0.30 + crowdScore * 0.15 + serviceScore * 0.10;
+    }
+
+    private double windowTagSimilarity(WindowDiversionCandidate source, WindowDiversionCandidate target) {
+        Set<String> sourceTags = TagMatcher.normalize(source.matchingTags());
+        if (sourceTags.isEmpty()) {
+            return 50.0;
+        }
+        return TagMatcher.matchScore(sourceTags, target.matchingTags());
+    }
+
+    private int suggestedUserCount(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            String targetCrowdLevel
+    ) {
+        int sourceExcess = Math.max(0, source.queueLength() - maxQueueForLevel(source, targetCrowdLevel));
+        int targetRemaining = targetRemainingCapacity(target, targetCrowdLevel);
+        return Math.min(50, Math.min(sourceExcess, targetRemaining));
+    }
+
+    private int targetRemainingCapacity(WindowDiversionCandidate target, String targetCrowdLevel) {
+        return Math.max(0, maxQueueForLevel(target, targetCrowdLevel) - target.queueLength());
+    }
+
+    private int maxQueueForLevel(WindowDiversionCandidate candidate, String targetCrowdLevel) {
+        int maxWaitMinutes = switch (targetCrowdLevel) {
+            case "IDLE" -> 4;
+            case "NORMAL" -> 9;
+            case "BUSY" -> 19;
+            default -> Math.max(20, candidate.waitMinutes());
+        };
+        return Math.max(0, (int) Math.floor(maxWaitMinutes * candidate.serviceRatePerMinute()));
+    }
+
+    private String diversionReason(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            int suggestedUserCount
+    ) {
+        String tagText = windowTagSimilarity(source, target) >= 70.0 ? "口味标签相近，" : "";
+        return source.restaurantName() + source.windowName()
+                + "当前拥挤度为 " + source.crowdLevel()
+                + "，预计等待 " + source.waitMinutes()
+                + " 分钟；" + target.restaurantName() + target.windowName()
+                + "等待约 " + target.waitMinutes()
+                + " 分钟，" + tagText
+                + "建议分流约 " + suggestedUserCount + " 人。";
     }
 
     private int resolveLimit(Integer limit) {
@@ -373,5 +547,35 @@ public class RecommendationService {
     }
 
     private record WindowCandidate(String restaurantName, String windowName, int waitMinutes, String crowdLevel) {
+    }
+
+    private record WindowDiversionCandidate(
+            Long restaurantId,
+            String restaurantName,
+            Long windowId,
+            String windowName,
+            int queueLength,
+            int waitMinutes,
+            String crowdLevel,
+            String matchingTags,
+            double serviceRatePerMinute
+    ) {
+        private WindowDiversionCandidate(
+                RestaurantSnapshot restaurant,
+                WindowSnapshot window,
+                WindowParameter parameter
+        ) {
+            this(
+                    restaurant.restaurantId(),
+                    restaurant.name(),
+                    window.windowId(),
+                    window.name(),
+                    window.queueLength(),
+                    window.waitMinutes(),
+                    window.crowdLevel(),
+                    parameter.matchingTags(),
+                    parameter.serviceRatePerMinute()
+            );
+        }
     }
 }
