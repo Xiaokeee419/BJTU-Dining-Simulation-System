@@ -38,6 +38,7 @@
   - 已从 feature/b-strategy-compare 新建 B 模块汇总交付分支。
   - 当前汇总分支包含 B 模块三个功能阶段的完整代码：推荐接口、分流建议、策略对比。
   - 已在 docs/B/ 下新增源代码说明文档，覆盖总览、Controller、DTO、Service、Model、Repository 和测试说明。
+  - 已生成个人单元测试报告 Word 文档：docs/B/软件综合实训_[学号]_[姓名]_单元测试报告.docx。
   - 该分支可作为个人源代码压缩包和源代码说明文档整理的依据。
 
 B 模块源代码说明文档：
@@ -86,10 +87,10 @@ B 模块源代码说明文档：
 - feature/b-recommendation-api 已完成并推送到 origin/feature/b-recommendation-api。
 - feature/b-diversion-strategy 已完成并推送到 origin/feature/b-diversion-strategy。
 - feature/b-strategy-compare 已完成并推送到 origin/feature/b-strategy-compare。
-- 当前 feature/b-summary-deliverable 是 B 模块个人交付物汇总分支。
+- 当前 feature/b-summary-deliverable 是 B 模块个人交付物汇总分支，已推送到 origin/feature/b-summary-deliverable。
 - 接口成功响应继续使用 ApiResponse.ok，code=0。
 - 错误响应继续走 ApiException + GlobalExceptionHandler。
 - 后续真实 A 接口完成后，应替换 MockSimulationProvider。
 
 下一次给 Codex 的 prompt：
-你正在接手北京交通大学就餐仿真系统，项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。我负责 B 模块：分流策略与推荐算法模块。B 模块当前已完成 feature/b-recommendation-api、feature/b-diversion-strategy、feature/b-strategy-compare，并已创建 feature/b-summary-deliverable 汇总交付分支。接口包括 POST /api/v1/recommendations/generate、GET /api/v1/recommendations/runs/{runId}、POST /api/v1/recommendations/diversion、POST /api/v1/strategies/compare。docs/B/ 下已有源代码说明文档。请阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md 和 docs/public/接口规范.md，下一步根据 A 模块真实接口情况替换 MockSimulationProvider，或协助 C 模块做推荐/分流/场景对比联调。当前 backend 下 mvn test 通过，Tests run: 10。
+你正在接手北京交通大学就餐仿真系统，项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。当前请先切换/确认在 feature/b-summary-deliverable 分支；这个分支是 B 模块个人交付物汇总分支，已推送到 origin/feature/b-summary-deliverable。B 模块负责人负责“分流策略与推荐算法模块”，源码集中在 backend/src/main/java/com/bjtu/dining/recommendation/，测试在 backend/src/test/java/com/bjtu/dining/recommendation/。B 模块已完成三个功能阶段：1）feature/b-recommendation-api：POST /api/v1/recommendations/generate 和 GET /api/v1/recommendations/runs/{runId}，支持餐厅、窗口、菜品推荐、中文 reason、diversionSuggestion、generatedAt 和内存 RecommendationStore；2）feature/b-diversion-strategy：POST /api/v1/recommendations/diversion，支持 targetCrowdLevel，能从 BUSY/EXTREME 来源窗口生成分流建议、suggestedUserCount 和中文 reason；3）feature/b-strategy-compare：POST /api/v1/strategies/compare，支持 baseRunId、compareRunId，计算 avgWaitDelta、maxQueueDelta、busyWindowCountDelta、extremeWindowCountDelta、servedUserCountDelta，并返回中文 conclusion。当前数据源仍是 MockSimulationProvider，它会按正数 runId 生成可复现的内存仿真快照；真实 A 模块接口完成后，需要替换或适配该数据源。docs/B/ 下已经有源代码说明文档，包括总览、Controller、DTO、Service、Model、Repository、Test 七份 Markdown；同时已有个人单元测试报告 Word 文档 docs/B/软件综合实训_[学号]_[姓名]_单元测试报告.docx。当前 backend 下 mvn test 已通过，Tests run: 10，Failures: 0，Errors: 0，Skipped: 0，BUILD SUCCESS。请先阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md、docs/public/接口规范.md 和 docs/public/新版分工方案.md，再根据我的最新要求继续工作：如果是联调任务，优先设计 SimulationProvider 接口并把 MockSimulationProvider 和真实 A 接口适配解耦；如果是交付物任务，优先基于 feature/b-summary-deliverable 中的 docs/B 文档和测试报告继续补充个人材料；如果是前端联调，重点保证 C 能调用推荐、分流和策略对比三个接口，并直接展示 B 返回的中文理由和结论。
