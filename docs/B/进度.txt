@@ -1,0 +1,80 @@
+当前项目结构：
+- 后端工程在 backend/，Spring Boot 3.2.5 + Java 17。
+- B 模块代码集中在 backend/src/main/java/com/bjtu/dining/recommendation/。
+- A 模块种子数据在 data/task-a/*.csv。
+- 当前未接入真实 A 仿真接口，MockSimulationProvider 会按 runId 生成可复现的内存仿真快照。
+
+已完成内容：
+- feature/b-recommendation-api：
+  - POST /api/v1/recommendations/generate 已实现。
+  - GET /api/v1/recommendations/runs/{runId} 已实现。
+  - 已支持 runId、minute、profile、limit 请求字段。
+  - limit 默认 3，最大 10；minute 为空时使用最后时间点。
+  - 已读取指定时间点仿真快照，以及餐厅、窗口、菜品 CSV 参数。
+  - 已计算餐厅、窗口、菜品推荐分数，并按分数降序生成 rank。
+  - 已返回中文 reason、diversionSuggestion 和 generatedAt。
+  - 已通过内存 RecommendationStore 保存推荐结果，支持按 runId/minute 查询。
+  - 已补服务层测试覆盖生成推荐、查询推荐、默认 minute/limit、非法 limit、非法预算范围和未生成查询错误。
+- feature/b-diversion-strategy：
+  - POST /api/v1/recommendations/diversion 已实现。
+  - 已支持 runId、minute、targetCrowdLevel 请求字段。
+  - 已校验 targetCrowdLevel 枚举，非法值返回 40002。
+  - 已从指定时间点找出 BUSY/EXTREME 且超过目标拥挤度的来源窗口。
+  - 已筛选等待更短、拥挤度不高于目标等级、营业中的目标窗口。
+  - 已按等待差、标签相似度、拥挤度、服务速率计算目标窗口优先级。
+  - 已计算 suggestedUserCount，并生成中文 reason。
+  - 无合适来源或目标时返回空 suggestions 和可解释 reason。
+  - 已补服务层测试覆盖分流建议和非法 targetCrowdLevel。
+- feature/b-strategy-compare：
+  - POST /api/v1/strategies/compare 已实现。
+  - 已定义 baseRunId、compareRunId 请求 DTO。
+  - 已读取两个仿真结果的 metrics。
+  - 已计算 avgWaitDelta、maxQueueDelta、busyWindowCountDelta、extremeWindowCountDelta、servedUserCountDelta。
+  - 已返回中文 conclusion，可直接给前端展示。
+  - 已复用 ApiResponse.ok、ApiException 和 GlobalExceptionHandler 风格。
+  - 已处理 runId 不存在；仿真未完成时会返回 40901。
+  - 已补服务层测试覆盖策略对比和缺失 runId。
+
+验证情况：
+- Maven 已安装到 C:\Users\Lenovo\Tools\apache-maven-3.9.15。
+- 在 feature/b-strategy-compare 分支执行 backend 下的 mvn test，通过：
+  - Tests run: 10
+  - Failures: 0
+  - Errors: 0
+  - Skipped: 0
+  - BUILD SUCCESS
+- 此前也执行过 javac 编译：
+  - backend/src/main/java 全量编译通过。
+  - backend/src/test/java 全量编译通过。
+- 此前也执行过临时 smoke test：
+  - 推荐生成返回 restaurants/windows/dishes 各 3 条。
+  - 推荐结果有 generatedAt、diversionSuggestion、rank 和中文 reason。
+  - minute 为空时返回最后时间点 minute=60。
+  - limit 为空时默认返回 3 条。
+  - limit=11 正确返回 40001。
+  - 按 runId/minute 可查回已生成结果。
+  - 分流建议 runId=10001、minute=30、targetCrowdLevel=NORMAL 返回非空 suggestions。
+  - targetCrowdLevel=HOT 正确返回 40002。
+
+目前 bug：
+- MockSimulationProvider 目前会为任意正数 runId 生成仿真结果；真实 A 接口接入前，runId 不存在只能通过非正数模拟 40401。
+- 当前 B 模块仍使用 MockSimulationProvider，后续 A 的真实仿真查询接口完成后需要替换数据来源。
+
+下一步任务：
+- 等 A 模块真实仿真查询接口完成后，将 MockSimulationProvider 替换为真实数据来源。
+- 和 C 模块联调：
+  - C 调用 POST /api/v1/recommendations/generate 展示餐厅、窗口、菜品推荐。
+  - C 调用 POST /api/v1/recommendations/diversion 展示分流建议。
+  - C 调用 POST /api/v1/strategies/compare 展示场景对比结论。
+- 如果需要更贴近真实接口，后续可以增加 HTTP SimulationProvider 或 A 模块服务适配层。
+
+注意事项：
+- feature/b-recommendation-api 已完成并推送到 origin/feature/b-recommendation-api。
+- feature/b-diversion-strategy 已完成并推送到 origin/feature/b-diversion-strategy。
+- 当前 feature/b-strategy-compare 已基于 origin/feature/b-diversion-strategy 开发完成。
+- 接口成功响应继续使用 ApiResponse.ok，code=0。
+- 错误响应继续走 ApiException + GlobalExceptionHandler。
+- 后续真实 A 接口完成后，应替换 MockSimulationProvider。
+
+下一次给 Codex 的 prompt：
+你正在接手北京交通大学就餐仿真系统，项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。我负责 B 模块：分流策略与推荐算法模块。B 模块当前已完成 feature/b-recommendation-api、feature/b-diversion-strategy、feature/b-strategy-compare，接口包括 POST /api/v1/recommendations/generate、GET /api/v1/recommendations/runs/{runId}、POST /api/v1/recommendations/diversion、POST /api/v1/strategies/compare。请阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md 和 docs/public/接口规范.md，下一步根据 A 模块真实接口情况替换 MockSimulationProvider，或协助 C 模块做推荐/分流/场景对比联调。当前 backend 下 mvn test 通过，Tests run: 10。

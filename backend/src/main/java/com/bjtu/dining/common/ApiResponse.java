@@ -20,6 +20,10 @@ public record ApiResponse<T>(
         return new ApiResponse<>(code, message, data, newTraceId(), now());
     }
 
+    public static <T> ApiResponse<T> fail(int code, String message, T data) {
+        return error(code, message, data);
+    }
+
     private static String newTraceId() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 16);
     }

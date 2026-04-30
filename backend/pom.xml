@@ -13,9 +13,9 @@
 
     <groupId>com.bjtu</groupId>
     <artifactId>dining-simulation-backend</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.1.0-SNAPSHOT</version>
     <name>dining-simulation-backend</name>
-    <description>BJTU dining simulation backend</description>
+    <description>BJTU Dining Simulation backend</description>
 
     <properties>
         <java.version>17</java.version>
@@ -42,6 +42,9 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.bjtu.dining.DiningSimulationApplication</mainClass>
+                </configuration>
             </plugin>
         </plugins>
     </build>
