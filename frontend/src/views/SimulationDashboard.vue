@@ -57,7 +57,22 @@
     <section v-if="currentRun" class="timeline-panel panel">
       <div class="panel-header">
         <h2 class="panel-title">时间轴</h2>
-        <span class="muted">Run {{ currentRun.runId }}</span>
+        <div class="timeline-actions">
+          <span class="muted">Run {{ currentRun.runId }}</span>
+          <el-button
+            size="small"
+            :icon="playing ? VideoPause : VideoPlay"
+            @click="togglePlayback"
+          >
+            {{ playing ? '暂停' : '播放' }}
+          </el-button>
+          <el-button size="small" :icon="DArrowRight" @click="goNextMinute">
+            下一步
+          </el-button>
+          <el-button size="small" :icon="RefreshLeft" @click="goFirstMinute">
+            回到开始
+          </el-button>
+        </div>
       </div>
       <div class="panel-body timeline-body">
         <el-slider
@@ -87,10 +102,17 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { DataLine, Flag, VideoPlay } from '@element-plus/icons-vue'
+import {
+  DArrowRight,
+  DataLine,
+  Flag,
+  RefreshLeft,
+  VideoPause,
+  VideoPlay,
+} from '@element-plus/icons-vue'
 import ComparePanel from '../components/ComparePanel.vue'
 import MetricsCards from '../components/MetricsCards.vue'
 import ProfilePanel from '../components/ProfilePanel.vue'
@@ -122,6 +144,10 @@ const {
   comparing,
 } = storeToRefs(store)
 
+const playing = ref(false)
+let playbackTimer = null
+let playbackRefreshing = false
+
 const timelineMarks = computed(() => {
   if (!currentRun.value?.timePoints?.length) return {}
   const first = currentRun.value.timePoints[0]
@@ -132,6 +158,8 @@ const timelineMarks = computed(() => {
   }
 })
 
+const minuteStep = computed(() => Number(scenarioForm.value.stepMinutes || 5))
+
 onMounted(async () => {
   try {
     await store.initializeDashboard()
@@ -141,7 +169,12 @@ onMounted(async () => {
   }
 })
 
+onBeforeUnmount(() => {
+  stopPlayback()
+})
+
 async function handleRun() {
+  stopPlayback()
   try {
     await store.runCurrentSimulation()
   } catch (error) {
@@ -150,6 +183,7 @@ async function handleRun() {
 }
 
 async function handleCompare() {
+  stopPlayback()
   try {
     await store.runCompareSimulation()
   } catch (error) {
@@ -164,6 +198,55 @@ async function handleMinuteChange(minute) {
   } catch (error) {
     ElMessage.error(error.message || '推荐刷新失败')
   }
+}
+
+function togglePlayback() {
+  if (playing.value) {
+    stopPlayback()
+    return
+  }
+  startPlayback()
+}
+
+function startPlayback() {
+  if (!currentRun.value) return
+  if (currentMinute.value >= maxMinute.value) {
+    store.setCurrentMinute(0)
+  }
+  playing.value = true
+  playbackTimer = window.setInterval(playNextFrame, 1100)
+}
+
+function stopPlayback() {
+  playing.value = false
+  if (playbackTimer) {
+    window.clearInterval(playbackTimer)
+    playbackTimer = null
+  }
+}
+
+async function playNextFrame() {
+  if (playbackRefreshing) return
+  playbackRefreshing = true
+  try {
+    await goNextMinute()
+  } finally {
+    playbackRefreshing = false
+  }
+}
+
+async function goNextMinute() {
+  if (!currentRun.value) return
+  const nextMinute = Math.min(maxMinute.value, currentMinute.value + minuteStep.value)
+  await handleMinuteChange(nextMinute)
+  if (nextMinute >= maxMinute.value) {
+    stopPlayback()
+  }
+}
+
+async function goFirstMinute() {
+  stopPlayback()
+  await handleMinuteChange(0)
 }
 </script>
 
@@ -230,6 +313,14 @@ async function handleMinuteChange(minute) {
 
 .timeline-body {
   padding: 10px 30px 18px;
+}
+
+.timeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .queue-area {

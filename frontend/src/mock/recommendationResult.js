@@ -29,6 +29,10 @@ export function buildStrategyComparison(baseRun, compareRun) {
   const maxQueueDelta = compareRun.metrics.maxQueueLength - baseRun.metrics.maxQueueLength
   const busyWindowCountDelta =
     compareRun.metrics.busyWindowCount - baseRun.metrics.busyWindowCount
+  const extremeWindowCountDelta =
+    compareRun.metrics.extremeWindowCount - baseRun.metrics.extremeWindowCount
+  const servedUserCountDelta =
+    compareRun.metrics.servedUserCount - baseRun.metrics.servedUserCount
 
   return {
     baseRunId: baseRun.runId,
@@ -36,7 +40,14 @@ export function buildStrategyComparison(baseRun, compareRun) {
     avgWaitDelta,
     maxQueueDelta,
     busyWindowCountDelta,
-    conclusion: buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta),
+    extremeWindowCountDelta,
+    servedUserCountDelta,
+    conclusion: buildConclusion(
+      avgWaitDelta,
+      maxQueueDelta,
+      busyWindowCountDelta,
+      servedUserCountDelta,
+    ),
   }
 }
 
@@ -177,7 +188,7 @@ function buildDiversionSuggestion(timePoint, restaurantItems) {
   return `建议将${mostCrowded.name}部分人流引导至${target.name}，可降低高拥挤窗口压力`
 }
 
-function buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta) {
+function buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta, servedUserCountDelta) {
   const waitText =
     avgWaitDelta <= 0
       ? `平均等待降低 ${Math.abs(avgWaitDelta)} 分钟`
@@ -190,7 +201,11 @@ function buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta) {
     busyWindowCountDelta <= 0
       ? `高拥挤窗口减少 ${Math.abs(busyWindowCountDelta)} 个`
       : `高拥挤窗口增加 ${busyWindowCountDelta} 个`
-  return `${waitText}，${queueText}，${busyText}`
+  const servedText =
+    servedUserCountDelta >= 0
+      ? `已服务人数增加 ${servedUserCountDelta} 人`
+      : `已服务人数减少 ${Math.abs(servedUserCountDelta)} 人`
+  return `${waitText}，${queueText}，${busyText}，${servedText}`
 }
 
 function withRank(item, index) {

@@ -38,6 +38,18 @@
               {{ signed(comparison.busyWindowCountDelta) }} 次
             </strong>
           </div>
+          <div class="delta-item">
+            <span>极拥挤窗口变化</span>
+            <strong :class="deltaClass(comparison.extremeWindowCountDelta)">
+              {{ signed(comparison.extremeWindowCountDelta) }} 次
+            </strong>
+          </div>
+          <div class="delta-item">
+            <span>已服务人数变化</span>
+            <strong :class="deltaClass(-comparison.servedUserCountDelta)">
+              {{ signed(comparison.servedUserCountDelta) }} 人
+            </strong>
+          </div>
         </div>
         <p v-if="comparison" class="conclusion">{{ comparison.conclusion }}</p>
       </template>
@@ -64,11 +76,13 @@ defineProps({
 defineEmits(['clear'])
 
 function signed(value) {
+  if (value == null) return '-'
   if (value > 0) return `+${value}`
   return String(value)
 }
 
 function deltaClass(value) {
+  if (value == null) return ''
   if (value < 0) return 'good'
   if (value > 0) return 'bad'
   return ''
@@ -90,7 +104,7 @@ function deltaClass(value) {
 
 .delta-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   margin-top: 8px;
 }
