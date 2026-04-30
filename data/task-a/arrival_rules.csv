@@ -1,4 +1,0 @@
-﻿meal_period,simulation_start_time,course_reference_time,peak_centers_minutes,peak_weights,standard_deviations,description
-BREAKFAST,07:00,08:00,35|48|20,0.70|0.20|0.10,10|7|8,早餐人流集中在 8:00 上课前，主峰约 7:35，次峰约 7:48。
-LUNCH,11:30,12:00,38|52|20,0.75|0.20|0.05,8|10|8,午餐人流由 12:00 下课驱动，考虑步行时间，主峰约 12:08。
-DINNER,18:00,18:30,42|58|25,0.75|0.20|0.05,10|12|8,晚餐人流由 18:30 下课驱动，考虑步行时间，主峰约 18:42。
