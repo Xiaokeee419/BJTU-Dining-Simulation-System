@@ -34,10 +34,24 @@
   - 已复用 ApiResponse.ok、ApiException 和 GlobalExceptionHandler 风格。
   - 已处理 runId 不存在；仿真未完成时会返回 40901。
   - 已补服务层测试覆盖策略对比和缺失 runId。
+- feature/b-summary-deliverable：
+  - 已从 feature/b-strategy-compare 新建 B 模块汇总交付分支。
+  - 当前汇总分支包含 B 模块三个功能阶段的完整代码：推荐接口、分流建议、策略对比。
+  - 已在 docs/B/ 下新增源代码说明文档，覆盖总览、Controller、DTO、Service、Model、Repository 和测试说明。
+  - 该分支可作为个人源代码压缩包和源代码说明文档整理的依据。
+
+B 模块源代码说明文档：
+- docs/B/源代码说明-总览.md
+- docs/B/源代码说明-controller接口层.md
+- docs/B/源代码说明-dto数据传输对象.md
+- docs/B/源代码说明-service业务逻辑.md
+- docs/B/源代码说明-model数据模型.md
+- docs/B/源代码说明-repository数据访问.md
+- docs/B/源代码说明-test测试说明.md
 
 验证情况：
 - Maven 已安装到 C:\Users\Lenovo\Tools\apache-maven-3.9.15。
-- 在 feature/b-strategy-compare 分支执行 backend 下的 mvn test，通过：
+- 在 feature/b-summary-deliverable 分支执行 backend 下的 mvn test，通过：
   - Tests run: 10
   - Failures: 0
   - Errors: 0
@@ -71,10 +85,11 @@
 注意事项：
 - feature/b-recommendation-api 已完成并推送到 origin/feature/b-recommendation-api。
 - feature/b-diversion-strategy 已完成并推送到 origin/feature/b-diversion-strategy。
-- 当前 feature/b-strategy-compare 已基于 origin/feature/b-diversion-strategy 开发完成。
+- feature/b-strategy-compare 已完成并推送到 origin/feature/b-strategy-compare。
+- 当前 feature/b-summary-deliverable 是 B 模块个人交付物汇总分支。
 - 接口成功响应继续使用 ApiResponse.ok，code=0。
 - 错误响应继续走 ApiException + GlobalExceptionHandler。
 - 后续真实 A 接口完成后，应替换 MockSimulationProvider。
 
 下一次给 Codex 的 prompt：
-你正在接手北京交通大学就餐仿真系统，项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。我负责 B 模块：分流策略与推荐算法模块。B 模块当前已完成 feature/b-recommendation-api、feature/b-diversion-strategy、feature/b-strategy-compare，接口包括 POST /api/v1/recommendations/generate、GET /api/v1/recommendations/runs/{runId}、POST /api/v1/recommendations/diversion、POST /api/v1/strategies/compare。请阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md 和 docs/public/接口规范.md，下一步根据 A 模块真实接口情况替换 MockSimulationProvider，或协助 C 模块做推荐/分流/场景对比联调。当前 backend 下 mvn test 通过，Tests run: 10。
+你正在接手北京交通大学就餐仿真系统，项目根目录是 e:\CS\SoftwareDesignTraining\BJTU-Dining-Simulation-System。我负责 B 模块：分流策略与推荐算法模块。B 模块当前已完成 feature/b-recommendation-api、feature/b-diversion-strategy、feature/b-strategy-compare，并已创建 feature/b-summary-deliverable 汇总交付分支。接口包括 POST /api/v1/recommendations/generate、GET /api/v1/recommendations/runs/{runId}、POST /api/v1/recommendations/diversion、POST /api/v1/strategies/compare。docs/B/ 下已有源代码说明文档。请阅读 docs/B/进度.txt、docs/B/B模块开发TODO.md 和 docs/public/接口规范.md，下一步根据 A 模块真实接口情况替换 MockSimulationProvider，或协助 C 模块做推荐/分流/场景对比联调。当前 backend 下 mvn test 通过，Tests run: 10。
