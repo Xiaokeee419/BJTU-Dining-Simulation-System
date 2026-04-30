@@ -46,22 +46,22 @@ defineProps({
 .suggestion {
   margin-top: 14px;
   padding: 12px;
-  border: 1px solid #dbeafe;
+  border: 1px solid #cfe7e3;
   border-radius: 8px;
-  background: #eff6ff;
+  background: #f0fdfa;
 }
 
 .suggestion span {
   display: block;
   margin-bottom: 6px;
-  color: #1d4ed8;
+  color: #0f766e;
   font-size: 13px;
   font-weight: 700;
 }
 
 .suggestion p {
   margin: 0;
-  color: #1e3a8a;
+  color: #134e4a;
   line-height: 1.6;
 }
 </style>

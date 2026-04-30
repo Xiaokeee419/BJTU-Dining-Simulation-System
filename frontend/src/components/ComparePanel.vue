@@ -186,12 +186,14 @@ function resizeChart() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
-  color: #64748b;
+  padding: 9px 0;
+  color: #657084;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .run-row strong {
-  color: #0f172a;
+  color: #172033;
 }
 
 .delta-grid {
@@ -209,16 +211,17 @@ function resizeChart() {
 
 .delta-item {
   padding: 12px;
-  border: 1px solid #e5eaf2;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 
 .delta-item span {
   display: block;
   margin-bottom: 6px;
-  color: #64748b;
+  color: #657084;
   font-size: 13px;
+  font-weight: 700;
 }
 
 .delta-item strong {
@@ -238,8 +241,8 @@ function resizeChart() {
   margin: 14px 0 0;
   padding: 12px;
   border-radius: 8px;
-  color: #365314;
-  background: #ecfccb;
+  color: #134e4a;
+  background: #f0fdfa;
   line-height: 1.6;
 }
 

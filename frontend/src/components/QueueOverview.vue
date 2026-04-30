@@ -122,16 +122,18 @@ function tagType(level) {
   display: grid;
   grid-template-columns: 1fr;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid #e5eaf2;
+  padding: 13px;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fafc;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 8px 18px rgb(23 32 51 / 5%);
 }
 
 .restaurant-row strong {
   display: block;
   margin-bottom: 4px;
-  color: #0f172a;
+  color: #172033;
 }
 
 .restaurant-status {
@@ -143,6 +145,9 @@ function tagType(level) {
 
 .window-table {
   width: 100%;
+  border: 1px solid #e8edf4;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 @media (max-width: 900px) {

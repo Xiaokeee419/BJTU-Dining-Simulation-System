@@ -116,12 +116,13 @@ function updateBudget(value) {
 .field-meta {
   width: 100%;
   margin-top: 4px;
-  color: #64748b;
+  color: #657084;
   font-size: 13px;
+  font-weight: 650;
 }
 
 .unit {
   margin-left: 8px;
-  color: #64748b;
+  color: #657084;
 }
 </style>

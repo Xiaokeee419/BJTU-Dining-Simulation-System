@@ -152,6 +152,16 @@ function updateField(key, value) {
   width: 100%;
   gap: 12px;
   margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e8edf4;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.factor-row span {
+  color: #4b5565;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .factor-row:last-child {

@@ -1,9 +1,17 @@
 <template>
   <main v-loading="loading" class="dashboard">
     <header class="dashboard-header">
-      <div>
-        <p class="eyebrow">BJTU Dining Simulation</p>
+      <div class="header-copy">
+        <div class="brand-row">
+          <span class="brand-mark">BJ</span>
+          <p class="eyebrow">BJTU Dining Simulation</p>
+        </div>
         <h1>就餐仿真控制台</h1>
+        <div class="header-meta">
+          <span>接口规范 v0.2</span>
+          <span>{{ apiMode }}</span>
+          <span v-if="currentRun">Run {{ currentRun.runId }}</span>
+        </div>
       </div>
       <div class="header-actions">
         <el-button
@@ -159,6 +167,9 @@ const timelineMarks = computed(() => {
 })
 
 const minuteStep = computed(() => Number(scenarioForm.value.stepMinutes || 5))
+const apiMode = computed(() =>
+  import.meta.env.VITE_USE_MOCK === 'false' ? '真实接口' : 'Mock 演示',
+)
 
 onMounted(async () => {
   try {
@@ -254,10 +265,10 @@ async function goFirstMinute() {
 .dashboard {
   display: grid;
   gap: 16px;
-  width: min(1500px, 100%);
+  width: min(1520px, 100%);
   min-height: 100vh;
   margin: 0 auto;
-  padding: 24px;
+  padding: 22px;
 }
 
 .dashboard-header {
@@ -265,16 +276,45 @@ async function goFirstMinute() {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px;
-  border: 1px solid #cbd5e1;
+  min-height: 142px;
+  padding: 22px 24px;
+  border: 1px solid #2b3445;
   border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 10px 24px rgb(15 23 42 / 6%);
+  color: #ffffff;
+  background:
+    url("../assets/hero.png") right 22px center / 154px auto no-repeat,
+    linear-gradient(90deg, rgb(18 24 38 / 96%) 0%, rgb(34 22 31 / 98%) 58%, rgb(74 16 32 / 98%) 100%);
+  box-shadow: 0 18px 42px rgb(23 32 51 / 18%);
+}
+
+.header-copy {
+  min-width: 0;
+  max-width: 720px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 8px;
+  color: #ffffff;
+  background: rgb(255 255 255 / 10%);
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .eyebrow {
-  margin: 0 0 4px;
-  color: #2563eb;
+  margin: 0;
+  color: #fecdd3;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -283,9 +323,26 @@ async function goFirstMinute() {
 
 .dashboard h1 {
   margin: 0;
-  color: #0f172a;
-  font-size: 26px;
+  color: #ffffff;
+  font-size: 30px;
   line-height: 1.2;
+}
+
+.header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.header-meta span {
+  padding: 5px 9px;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 999px;
+  color: #f8fafc;
+  background: rgb(255 255 255 / 9%);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .header-actions {
@@ -293,6 +350,7 @@ async function goFirstMinute() {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+  max-width: 360px;
 }
 
 .config-grid {
@@ -339,6 +397,9 @@ async function goFirstMinute() {
   .dashboard-header {
     align-items: flex-start;
     flex-direction: column;
+    background:
+      url("../assets/hero.png") right 14px top 18px / 104px auto no-repeat,
+      linear-gradient(90deg, rgb(18 24 38 / 97%) 0%, rgb(74 16 32 / 98%) 100%);
   }
 
   .profile-area,

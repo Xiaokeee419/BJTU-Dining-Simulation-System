@@ -122,6 +122,9 @@ function resizeCharts() {
   width: 100%;
   min-width: 0;
   height: 320px;
+  border: 1px solid #e8edf4;
+  border-radius: 8px;
+  background: #fbfcfe;
 }
 
 @media (max-width: 920px) {

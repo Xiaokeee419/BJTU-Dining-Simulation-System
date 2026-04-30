@@ -65,9 +65,10 @@ function tagType(level) {
   grid-template-columns: 42px 1fr;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e5eaf2;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 8px 18px rgb(23 32 51 / 5%);
 }
 
 .rank {
@@ -77,7 +78,7 @@ function tagType(level) {
   height: 42px;
   border-radius: 8px;
   color: #ffffff;
-  background: #1f2937;
+  background: #4a1020;
   font-weight: 800;
 }
 
@@ -90,12 +91,12 @@ function tagType(level) {
 }
 
 .item-title strong {
-  color: #0f172a;
+  color: #172033;
 }
 
 .recommendation-main p {
   margin: 0 0 8px;
-  color: #475569;
+  color: #4b5565;
   line-height: 1.55;
 }
 
