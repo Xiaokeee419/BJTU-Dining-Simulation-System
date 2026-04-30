@@ -3,6 +3,7 @@ package com.bjtu.dining.recommendation.service;
 import com.bjtu.dining.common.ApiException;
 import com.bjtu.dining.recommendation.dto.DiversionRequest;
 import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
+import com.bjtu.dining.recommendation.dto.StrategyCompareRequest;
 import com.bjtu.dining.recommendation.dto.UserProfileRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -126,5 +127,26 @@ class RecommendationServiceTest {
         assertThatThrownBy(() -> recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "HOT")))
                 .isInstanceOf(ApiException.class)
                 .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40002));
+    }
+
+    @Test
+    void compareStrategiesReturnsMetricDeltasAndConclusion() {
+        var result = recommendationService.compareStrategies(new StrategyCompareRequest(10001L, 10002L));
+
+        assertThat(result.baseRunId()).isEqualTo(10001L);
+        assertThat(result.compareRunId()).isEqualTo(10002L);
+        assertThat(result.avgWaitDelta()).isLessThan(0);
+        assertThat(result.maxQueueDelta()).isLessThan(0);
+        assertThat(result.busyWindowCountDelta()).isLessThan(0);
+        assertThat(result.extremeWindowCountDelta()).isLessThanOrEqualTo(0);
+        assertThat(result.servedUserCountDelta()).isPositive();
+        assertThat(result.conclusion()).contains("平均等待时间").contains("整体分流效果");
+    }
+
+    @Test
+    void compareStrategiesRejectsMissingRunId() {
+        assertThatThrownBy(() -> recommendationService.compareStrategies(new StrategyCompareRequest(0L, 10002L)))
+                .isInstanceOf(ApiException.class)
+                .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40401));
     }
 }

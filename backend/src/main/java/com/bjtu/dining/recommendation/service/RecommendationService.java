@@ -7,8 +7,11 @@ import com.bjtu.dining.recommendation.dto.DiversionSuggestionItem;
 import com.bjtu.dining.recommendation.dto.RecommendationGenerateRequest;
 import com.bjtu.dining.recommendation.dto.RecommendationItem;
 import com.bjtu.dining.recommendation.dto.RecommendationResult;
+import com.bjtu.dining.recommendation.dto.StrategyCompareRequest;
+import com.bjtu.dining.recommendation.dto.StrategyComparisonResult;
 import com.bjtu.dining.recommendation.dto.UserProfileRequest;
 import com.bjtu.dining.recommendation.model.DishParameter;
+import com.bjtu.dining.recommendation.model.EvaluationMetrics;
 import com.bjtu.dining.recommendation.model.RestaurantParameter;
 import com.bjtu.dining.recommendation.model.RestaurantSnapshot;
 import com.bjtu.dining.recommendation.model.SimulationRunResult;
@@ -158,6 +161,39 @@ public class RecommendationService {
         return new DiversionResult(request.runId(), timePoint.minute(), suggestions, reason);
     }
 
+    public StrategyComparisonResult compareStrategies(StrategyCompareRequest request) {
+        SimulationRunResult baseSimulation = loadFinishedSimulation(request.baseRunId(), "无法比较策略");
+        SimulationRunResult compareSimulation = loadFinishedSimulation(request.compareRunId(), "无法比较策略");
+        EvaluationMetrics baseMetrics = baseSimulation.metrics();
+        EvaluationMetrics compareMetrics = compareSimulation.metrics();
+        if (baseMetrics == null || compareMetrics == null) {
+            throw new ApiException(40400, "仿真评估指标不存在", HttpStatus.NOT_FOUND);
+        }
+
+        double avgWaitDelta = roundOne(compareMetrics.avgWaitMinutes() - baseMetrics.avgWaitMinutes());
+        int maxQueueDelta = compareMetrics.maxQueueLength() - baseMetrics.maxQueueLength();
+        int busyWindowCountDelta = compareMetrics.busyWindowCount() - baseMetrics.busyWindowCount();
+        int extremeWindowCountDelta = compareMetrics.extremeWindowCount() - baseMetrics.extremeWindowCount();
+        int servedUserCountDelta = compareMetrics.servedUserCount() - baseMetrics.servedUserCount();
+
+        return new StrategyComparisonResult(
+                request.baseRunId(),
+                request.compareRunId(),
+                avgWaitDelta,
+                maxQueueDelta,
+                busyWindowCountDelta,
+                extremeWindowCountDelta,
+                servedUserCountDelta,
+                buildComparisonConclusion(
+                        avgWaitDelta,
+                        maxQueueDelta,
+                        busyWindowCountDelta,
+                        extremeWindowCountDelta,
+                        servedUserCountDelta
+                )
+        );
+    }
+
     private List<RecommendationItem> buildRestaurantRecommendations(
             SimulationTimePoint timePoint,
             UserProfileRequest profile,
@@ -290,11 +326,74 @@ public class RecommendationService {
     }
 
     private SimulationRunResult loadFinishedSimulation(Long runId) {
+        return loadFinishedSimulation(runId, "无法生成推荐");
+    }
+
+    private SimulationRunResult loadFinishedSimulation(Long runId, String operationText) {
         SimulationRunResult simulation = simulationProvider.findByRunId(runId);
         if (!"FINISHED".equals(simulation.status())) {
-            throw new ApiException(40901, "仿真尚未完成，无法生成推荐", HttpStatus.CONFLICT);
+            throw new ApiException(40901, "仿真尚未完成，" + operationText, HttpStatus.CONFLICT);
         }
         return simulation;
+    }
+
+    private String buildComparisonConclusion(
+            double avgWaitDelta,
+            int maxQueueDelta,
+            int busyWindowCountDelta,
+            int extremeWindowCountDelta,
+            int servedUserCountDelta
+    ) {
+        List<String> parts = new ArrayList<>();
+        parts.add("对比场景平均等待时间" + deltaText(avgWaitDelta, "分钟"));
+        parts.add("最大排队长度" + deltaText(maxQueueDelta, "人"));
+        parts.add("拥挤窗口数量" + deltaText(busyWindowCountDelta, "个"));
+        parts.add("极端拥挤窗口数量" + deltaText(extremeWindowCountDelta, "个"));
+        parts.add("已服务人数" + deltaText(servedUserCountDelta, "人"));
+
+        int score = 0;
+        score += avgWaitDelta < 0 ? 2 : avgWaitDelta > 0 ? -2 : 0;
+        score += maxQueueDelta < 0 ? 1 : maxQueueDelta > 0 ? -1 : 0;
+        score += busyWindowCountDelta < 0 ? 1 : busyWindowCountDelta > 0 ? -1 : 0;
+        score += extremeWindowCountDelta < 0 ? 1 : extremeWindowCountDelta > 0 ? -1 : 0;
+        score += servedUserCountDelta > 0 ? 1 : servedUserCountDelta < 0 ? -1 : 0;
+
+        String summary;
+        if (score >= 3) {
+            summary = "整体分流效果较好。";
+        } else if (score <= -3) {
+            summary = "对比场景压力有所上升，建议调整窗口开放或分流策略。";
+        } else {
+            summary = "整体效果变化不明显，可结合具体窗口排队情况继续观察。";
+        }
+        return String.join("，", parts) + "，" + summary;
+    }
+
+    private String deltaText(double delta, String unit) {
+        if (delta < 0) {
+            return "降低 " + formatDelta(Math.abs(delta)) + " " + unit;
+        }
+        if (delta > 0) {
+            return "增加 " + formatDelta(delta) + " " + unit;
+        }
+        return "持平";
+    }
+
+    private String deltaText(int delta, String unit) {
+        if (delta < 0) {
+            return "减少 " + Math.abs(delta) + " " + unit;
+        }
+        if (delta > 0) {
+            return "增加 " + delta + " " + unit;
+        }
+        return "持平";
+    }
+
+    private String formatDelta(double value) {
+        if (value == Math.rint(value)) {
+            return String.valueOf((int) value);
+        }
+        return String.format(Locale.ROOT, "%.1f", value);
     }
 
     private String validateCrowdLevel(String crowdLevel) {
@@ -544,6 +643,10 @@ public class RecommendationService {
 
     private double round(double value) {
         return Math.round(Math.max(0, Math.min(100, value)) * 10.0) / 10.0;
+    }
+
+    private double roundOne(double value) {
+        return Math.round(value * 10.0) / 10.0;
     }
 
     private record WindowCandidate(String restaurantName, String windowName, int waitMinutes, String crowdLevel) {
