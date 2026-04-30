@@ -86,6 +86,8 @@ function buildTimePoint(minute, index, totalPoints, scenario, scenarioFactor) {
 function buildWindowStates(relatedWindows, restaurantCount, closedWindowIds, index) {
   const openWindows = relatedWindows.filter((window) => !closedWindowIds.has(window.windowId))
   const totalRate = openWindows.reduce((sum, window) => sum + window.serviceRatePerMinute, 0) || 1
+  const closurePressure = relatedWindows.length / Math.max(1, openWindows.length)
+  const queueShare = clamp(0.08 + restaurantCount / 4200, 0.1, 0.22) * closurePressure
 
   return relatedWindows.map((window, windowIndex) => {
     if (closedWindowIds.has(window.windowId)) {
@@ -102,10 +104,11 @@ function buildWindowStates(relatedWindows, restaurantCount, closedWindowIds, ind
 
     const rateShare = window.serviceRatePerMinute / totalRate
     const wave = 0.9 + 0.18 * Math.sin(index * 0.72 + windowIndex * 1.2)
-    const demand = restaurantCount * rateShare * wave
+    const demand = restaurantCount * rateShare * wave * queueShare
     const servingCount = Math.max(1, Math.round(window.serviceRatePerMinute * 2))
-    const queueLength = Math.max(0, Math.round(demand - window.serviceRatePerMinute * 10))
-    const waitMinutes = Math.max(1, Math.ceil(queueLength / window.serviceRatePerMinute))
+    const queueLength = Math.max(0, Math.round(demand - window.serviceRatePerMinute * 3))
+    const rawWaitMinutes = queueLength / (window.serviceRatePerMinute * 1.35)
+    const waitMinutes = Math.max(1, Math.min(35, Math.ceil(rawWaitMinutes)))
 
     return {
       windowId: window.windowId,
@@ -167,4 +170,8 @@ function buildMetrics(timePoints, virtualUserCount) {
 function round(value, digits) {
   const base = 10 ** digits
   return Math.round(value * base) / base
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
 }
