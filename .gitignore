@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+.m2/
+backend/target/
