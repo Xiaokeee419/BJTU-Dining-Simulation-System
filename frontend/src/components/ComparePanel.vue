@@ -19,6 +19,7 @@
           <span>对比</span>
           <strong>{{ compareRun?.runId || '-' }}</strong>
         </div>
+        <div v-if="baseRun && compareRun" ref="chartRef" class="compare-chart"></div>
         <div v-if="comparison" class="delta-grid">
           <div class="delta-item">
             <span>平均等待变化</span>
@@ -58,7 +59,10 @@
 </template>
 
 <script setup>
-defineProps({
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import * as echarts from 'echarts'
+
+const props = defineProps({
   baseRun: {
     type: Object,
     default: null,
@@ -75,6 +79,25 @@ defineProps({
 
 defineEmits(['clear'])
 
+const chartRef = ref(null)
+let chart
+
+onMounted(() => {
+  renderChart()
+  window.addEventListener('resize', resizeChart)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeChart)
+  chart?.dispose()
+})
+
+watch(
+  () => [props.baseRun, props.compareRun],
+  () => nextTick(renderChart),
+  { deep: true },
+)
+
 function signed(value) {
   if (value == null) return '-'
   if (value > 0) return `+${value}`
@@ -86,6 +109,75 @@ function deltaClass(value) {
   if (value < 0) return 'good'
   if (value > 0) return 'bad'
   return ''
+}
+
+function renderChart() {
+  if (
+    !chartRef.value ||
+    !props.baseRun?.timePoints?.length ||
+    !props.compareRun?.timePoints?.length
+  ) {
+    chart?.dispose()
+    chart = null
+    return
+  }
+  if (!chart) {
+    chart = echarts.init(chartRef.value)
+  }
+
+  const labels = props.baseRun.timePoints.map((point) => `${point.minute}分`)
+  chart.setOption({
+    color: ['#2563eb', '#16a34a', '#dc2626', '#d97706'],
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0 },
+    grid: { left: 42, right: 18, top: 42, bottom: 28 },
+    xAxis: { type: 'category', data: labels, boundaryGap: false },
+    yAxis: { type: 'value' },
+    series: [
+      {
+        name: '基准平均等待',
+        type: 'line',
+        smooth: true,
+        data: props.baseRun.timePoints.map(avgWaitMinutes),
+      },
+      {
+        name: '对比平均等待',
+        type: 'line',
+        smooth: true,
+        data: props.compareRun.timePoints.map(avgWaitMinutes),
+      },
+      {
+        name: '基准最大排队',
+        type: 'line',
+        smooth: true,
+        lineStyle: { type: 'dashed' },
+        data: props.baseRun.timePoints.map(maxQueueLength),
+      },
+      {
+        name: '对比最大排队',
+        type: 'line',
+        smooth: true,
+        lineStyle: { type: 'dashed' },
+        data: props.compareRun.timePoints.map(maxQueueLength),
+      },
+    ],
+  })
+}
+
+function avgWaitMinutes(point) {
+  const windows = point.restaurants.flatMap((restaurant) => restaurant.windows)
+  if (!windows.length) return 0
+  const total = windows.reduce((sum, window) => sum + window.waitMinutes, 0)
+  return Math.round((total / windows.length) * 10) / 10
+}
+
+function maxQueueLength(point) {
+  const windows = point.restaurants.flatMap((restaurant) => restaurant.windows)
+  return windows.length ? Math.max(...windows.map((window) => window.queueLength)) : 0
+}
+
+function resizeChart() {
+  chart?.resize()
 }
 </script>
 
@@ -107,6 +199,12 @@ function deltaClass(value) {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   margin-top: 8px;
+}
+
+.compare-chart {
+  width: 100%;
+  height: 260px;
+  margin: 12px 0;
 }
 
 .delta-item {
