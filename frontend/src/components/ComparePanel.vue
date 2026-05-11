@@ -19,6 +19,18 @@
           <span>对比</span>
           <strong>{{ compareRun?.runId || '-' }}</strong>
         </div>
+        <div v-if="verdict" class="compare-verdict" :class="verdict.level">
+          <strong>{{ verdict.title }}</strong>
+          <span>{{ verdict.text }}</span>
+        </div>
+        <div v-if="scenarioDiffs.length" class="scenario-diffs">
+          <span class="diff-label">本次调整</span>
+          <div class="diff-list">
+            <span v-for="item in scenarioDiffs" :key="item.label">
+              {{ item.label }}：{{ item.before }} → {{ item.after }}
+            </span>
+          </div>
+        </div>
         <div v-if="baseRun && compareRun" ref="chartRef" class="compare-chart"></div>
         <div v-if="comparison" class="delta-grid">
           <div class="delta-item">
@@ -59,7 +71,7 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps({
@@ -81,6 +93,59 @@ defineEmits(['clear'])
 
 const chartRef = ref(null)
 let chart
+
+const verdict = computed(() => {
+  const comparison = props.comparison
+  if (!comparison) return null
+
+  let score = 0
+  score += comparison.avgWaitDelta < 0 ? 2 : comparison.avgWaitDelta > 0 ? -2 : 0
+  score += comparison.maxQueueDelta < 0 ? 1 : comparison.maxQueueDelta > 0 ? -1 : 0
+  score += comparison.busyWindowCountDelta < 0 ? 1 : comparison.busyWindowCountDelta > 0 ? -1 : 0
+  score += comparison.extremeWindowCountDelta < 0 ? 1 : comparison.extremeWindowCountDelta > 0 ? -1 : 0
+  score += comparison.servedUserCountDelta > 0 ? 1 : comparison.servedUserCountDelta < 0 ? -1 : 0
+
+  if (score >= 3) {
+    return {
+      level: 'good',
+      title: '调整有效',
+      text: '核心排队压力指标整体改善，可以作为较优策略继续观察。',
+    }
+  }
+  if (score <= -3) {
+    return {
+      level: 'bad',
+      title: '压力上升',
+      text: '对比场景使等待或排队压力变大，建议回退参数或增加分流/开放窗口策略。',
+    }
+  }
+  return {
+    level: 'neutral',
+    title: '变化不明显',
+    text: '指标有升有降，建议结合具体窗口排队和推荐结果进一步判断。',
+  }
+})
+
+const scenarioDiffs = computed(() => {
+  const base = props.baseRun?.scenario
+  const current = props.compareRun?.scenario
+  if (!base || !current) return []
+
+  return [
+    diffItem('就餐时段', base.mealPeriod, current.mealPeriod, mealLabel),
+    diffItem('日期类型', base.dayType, current.dayType, dayLabel),
+    diffItem('拥挤等级', base.crowdLevel, current.crowdLevel, crowdLabel),
+    diffItem('仿真人数', base.virtualUserCount, current.virtualUserCount, (value) => `${value} 人`),
+    diffItem('天气系数', base.weatherFactor, current.weatherFactor),
+    diffItem('活动系数', base.eventFactor, current.eventFactor),
+    diffItem(
+      '关闭窗口',
+      base.closedWindowIds?.length || 0,
+      current.closedWindowIds?.length || 0,
+      (value) => `${value} 个`,
+    ),
+  ].filter(Boolean)
+})
 
 onMounted(() => {
   renderChart()
@@ -109,6 +174,50 @@ function deltaClass(value) {
   if (value < 0) return 'good'
   if (value > 0) return 'bad'
   return ''
+}
+
+function diffItem(label, before, after, formatter = formatValue) {
+  if (String(before) === String(after)) return null
+  return {
+    label,
+    before: formatter(before),
+    after: formatter(after),
+  }
+}
+
+function formatValue(value) {
+  if (value == null) return '-'
+  return String(value)
+}
+
+function mealLabel(value) {
+  return (
+    {
+      BREAKFAST: '早餐',
+      LUNCH: '午餐',
+      DINNER: '晚餐',
+    }[value] || formatValue(value)
+  )
+}
+
+function dayLabel(value) {
+  return (
+    {
+      WEEKDAY: '工作日',
+      WEEKEND: '周末',
+    }[value] || formatValue(value)
+  )
+}
+
+function crowdLabel(value) {
+  return (
+    {
+      IDLE: '空闲',
+      NORMAL: '正常',
+      BUSY: '繁忙',
+      EXTREME: '极拥挤',
+    }[value] || formatValue(value)
+  )
 }
 
 function renderChart() {
@@ -194,6 +303,65 @@ function resizeChart() {
 
 .run-row strong {
   color: #172033;
+}
+
+.compare-verdict {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.compare-verdict strong {
+  color: #172033;
+  font-size: 15px;
+}
+
+.compare-verdict span {
+  color: #657084;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.compare-verdict.good {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.compare-verdict.bad {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.scenario-diffs {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.diff-label {
+  color: #657084;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.diff-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diff-list span {
+  padding: 5px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  color: #475569;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .delta-grid {

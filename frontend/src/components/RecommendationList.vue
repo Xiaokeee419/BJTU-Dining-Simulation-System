@@ -14,9 +14,20 @@
           </el-tag>
         </div>
         <p>{{ item.reason }}</p>
+        <div class="score-row">
+          <span>匹配得分</span>
+          <el-progress
+            :percentage="normalizedScore(item.score)"
+            :stroke-width="8"
+            :show-text="false"
+          />
+          <strong>{{ normalizedScore(item.score) }}</strong>
+        </div>
         <div class="item-meta">
-          <span>得分 {{ item.score }}</span>
-          <span>等待 {{ item.estimatedWaitMinutes }} 分钟</span>
+          <span>{{ targetTypeLabel(item.targetType) }}</span>
+          <span class="wait-chip" :class="waitLevel(item.estimatedWaitMinutes)">
+            等待 {{ item.estimatedWaitMinutes }} 分钟
+          </span>
         </div>
       </div>
     </article>
@@ -50,6 +61,28 @@ function tagType(level) {
       BUSY: 'warning',
       EXTREME: 'danger',
     }[level] || 'info'
+  )
+}
+
+function normalizedScore(score) {
+  return Math.max(0, Math.min(100, Math.round(Number(score || 0))))
+}
+
+function waitLevel(minutes) {
+  const value = Number(minutes || 0)
+  if (value < 5) return 'good'
+  if (value < 10) return 'normal'
+  if (value < 20) return 'warn'
+  return 'danger'
+}
+
+function targetTypeLabel(type) {
+  return (
+    {
+      RESTAURANT: '餐厅推荐',
+      WINDOW: '窗口推荐',
+      DISH: '菜品推荐',
+    }[type] || '推荐项'
   )
 }
 </script>
@@ -100,11 +133,49 @@ function tagType(level) {
   line-height: 1.55;
 }
 
+.score-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.score-row span,
+.score-row strong {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .item-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   color: #64748b;
   font-size: 13px;
+}
+
+.wait-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #475569;
+  font-weight: 700;
+}
+
+.wait-chip.good {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.wait-chip.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.wait-chip.danger {
+  background: #fee2e2;
+  color: #991b1b;
 }
 </style>
