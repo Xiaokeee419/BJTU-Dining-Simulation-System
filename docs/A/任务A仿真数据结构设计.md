@@ -251,6 +251,20 @@ tagMatchScore = 交集标签数量 / 学生偏好标签数量
 
 ## 5. 下一步实现顺序
 
+当前已提供成员 A 的最小仿真算法脚本：
+
+```bash
+python3 scripts/run_task_a_simulation.py
+```
+
+默认输出：
+
+```text
+data/task-a/sample_simulation_result.json
+```
+
+该脚本可以作为后端 `POST /api/v1/simulations/run` 的算法原型，已完成：
+
 1. 加载 `data/task-a/*.csv` 到内存。
 2. 根据 `virtualUserCount` 抽样 `VirtualStudentSeed`，生成 `VirtualDiner`。
 3. 根据 `mealPeriod` 选择对应到达时间字段。
@@ -259,4 +273,21 @@ tagMatchScore = 交集标签数量 / 学生偏好标签数量
 6. 按 `stepMinutes` 推进队列状态。
 7. 生成 `SimulationTimePoint`。
 8. 汇总 `EvaluationMetrics`。
-9. 接入 `POST /api/v1/simulations/run`。
+
+可用于演示极端拥堵的命令：
+
+```bash
+python3 scripts/run_task_a_simulation.py \
+  --virtual-user-count 1800 \
+  --crowd-level EXTREME \
+  --event-factor 1.3
+```
+
+后续需要继续完成：
+
+1. 在后端实现 `POST /api/v1/simulations/run`，接收 `profile` 和 `scenario`。
+2. 将当前脚本中的仿真逻辑封装进后端服务方法。
+3. 后端返回 `SimulationRunResult`，其中包含 `runId`、`timePoints` 和 `metrics`。
+4. 成员 B 的推荐接口读取 A 返回的 `timePoints` 和 `metrics` 生成推荐结果。
+5. 成员 C 的前端页面调用仿真接口，展示“运行仿真”“播放时间轴”“查看评估指标”等功能。
+6. `sample_simulation_result.json` 可作为前端尚未接通后端前的 mock 数据。
