@@ -1,5 +1,8 @@
 package com.bjtu.dining.recommendation.dto;
 
+import java.util.List;
+import java.util.Map;
+
 public record RecommendationItem(
         String targetType,
         Long targetId,
@@ -10,7 +13,9 @@ public record RecommendationItem(
         Long relatedRestaurantId,
         Long relatedWindowId,
         int estimatedWaitMinutes,
-        String crowdLevel
+        String crowdLevel,
+        Map<String, Double> scoreBreakdown,
+        List<String> matchedTags
 ) {
     public RecommendationItem withRank(int newRank) {
         return new RecommendationItem(
@@ -23,7 +28,9 @@ public record RecommendationItem(
                 relatedRestaurantId,
                 relatedWindowId,
                 estimatedWaitMinutes,
-                crowdLevel
+                crowdLevel,
+                scoreBreakdown,
+                matchedTags
         );
     }
 }

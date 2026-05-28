@@ -38,8 +38,32 @@ class RecommendationServiceTest {
         assertThat(result.dishes()).hasSize(3);
         assertThat(result.windows()).isSortedAccordingTo((a, b) -> Double.compare(b.score(), a.score()));
         assertThat(result.windows().get(0).rank()).isEqualTo(1);
+        assertThat(result.windows().get(0).scoreBreakdown()).containsKeys("taste", "budget", "wait", "crowd", "popularity");
+        assertThat(result.windows().get(0).matchedTags()).contains("米饭");
         assertThat(result.dishes().get(0).reason()).contains("预计");
         assertThat(result.diversionSuggestion()).isNotBlank();
+    }
+
+    @Test
+    void generateAppliesDifferentUserTypeWeights() {
+        var hurry = recommendationService.generate(new RecommendationGenerateRequest(
+                10001L,
+                30,
+                new UserProfileRequest("HURRY", List.of("辣味", "米饭"), 10.0, 22.0, 6),
+                5
+        ));
+        var budgetSensitive = recommendationService.generate(new RecommendationGenerateRequest(
+                10001L,
+                30,
+                new UserProfileRequest("BUDGET_SENSITIVE", List.of("辣味", "米饭"), 10.0, 22.0, 6),
+                5
+        ));
+
+        assertThat(hurry.windows().get(0).score()).isNotEqualTo(budgetSensitive.windows().get(0).score());
+        assertThat(hurry.windows().get(0).scoreBreakdown().get("wait"))
+                .isGreaterThan(hurry.windows().get(0).scoreBreakdown().get("budget"));
+        assertThat(budgetSensitive.windows().get(0).scoreBreakdown().get("budget"))
+                .isGreaterThan(budgetSensitive.windows().get(0).scoreBreakdown().get("wait"));
     }
 
     @Test
@@ -112,40 +136,63 @@ class RecommendationServiceTest {
 
     @Test
     void generateDiversionReturnsSuggestionsForCrowdedWindows() {
-        var result = recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "NORMAL"));
+        var result = recommendationService.generateDiversion(new DiversionRequest(
+                10001L,
+                30,
+                "NORMAL",
+                new UserProfileRequest("HURRY", List.of("辣味", "米饭"), 10.0, 22.0, 8)
+        ));
 
         assertThat(result.runId()).isEqualTo(10001L);
         assertThat(result.minute()).isEqualTo(30);
         assertThat(result.reason()).contains("分流建议");
         assertThat(result.suggestions()).isNotEmpty();
         assertThat(result.suggestions().get(0).suggestedUserCount()).isPositive();
-        assertThat(result.suggestions().get(0).reason()).contains("建议分流");
+        assertThat(result.suggestions().get(0).acceptanceRate()).isBetween(0.0, 1.0);
+        assertThat(result.suggestions().get(0).estimatedAcceptedCount()).isPositive();
+        assertThat(result.suggestions().get(0).estimatedWaitReduction()).isPositive();
+        assertThat(result.suggestions().get(0).tagSimilarity()).isBetween(0.0, 1.0);
+        assertThat(result.suggestions().get(0).reason()).contains("用户接受分流");
     }
 
     @Test
     void generateDiversionRejectsInvalidTargetCrowdLevel() {
-        assertThatThrownBy(() -> recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "HOT")))
+        assertThatThrownBy(() -> recommendationService.generateDiversion(new DiversionRequest(10001L, 30, "HOT", null)))
                 .isInstanceOf(ApiException.class)
                 .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40002));
     }
 
     @Test
     void compareStrategiesReturnsMetricDeltasAndConclusion() {
-        var result = recommendationService.compareStrategies(new StrategyCompareRequest(10001L, 10002L));
+        var result = recommendationService.compareStrategies(
+                new StrategyCompareRequest(10001L, 10002L, "DIVERSION_AFTER")
+        );
 
         assertThat(result.baseRunId()).isEqualTo(10001L);
         assertThat(result.compareRunId()).isEqualTo(10002L);
+        assertThat(result.compareType()).isEqualTo("DIVERSION_AFTER");
         assertThat(result.avgWaitDelta()).isLessThan(0);
+        assertThat(result.maxWaitDelta()).isLessThanOrEqualTo(0);
         assertThat(result.maxQueueDelta()).isLessThan(0);
         assertThat(result.busyWindowCountDelta()).isLessThan(0);
         assertThat(result.extremeWindowCountDelta()).isLessThanOrEqualTo(0);
         assertThat(result.servedUserCountDelta()).isPositive();
-        assertThat(result.conclusion()).contains("平均等待时间").contains("整体分流效果");
+        assertThat(result.unservedUserCountDelta()).isLessThanOrEqualTo(0);
+        assertThat(result.conclusion()).contains("应用分流策略后").contains("整体策略效果");
+    }
+
+    @Test
+    void compareStrategiesDefaultsCompareTypeToScenario() {
+        var result = recommendationService.compareStrategies(
+                new StrategyCompareRequest(10001L, 10002L, null)
+        );
+
+        assertThat(result.compareType()).isEqualTo("SCENARIO");
     }
 
     @Test
     void compareStrategiesRejectsMissingRunId() {
-        assertThatThrownBy(() -> recommendationService.compareStrategies(new StrategyCompareRequest(0L, 10002L)))
+        assertThatThrownBy(() -> recommendationService.compareStrategies(new StrategyCompareRequest(0L, 10002L, null)))
                 .isInstanceOf(ApiException.class)
                 .isInstanceOfSatisfying(ApiException.class, ex -> assertThat(ex.code()).isEqualTo(40401));
     }

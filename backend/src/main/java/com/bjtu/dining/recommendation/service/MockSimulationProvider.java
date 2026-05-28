@@ -19,7 +19,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
-public class MockSimulationProvider {
+public class MockSimulationProvider implements SimulationProvider {
 
     private final CsvSeedRepository seedRepository;
     private final Map<Long, SimulationRunResult> cache = new ConcurrentHashMap<>();
@@ -28,6 +28,7 @@ public class MockSimulationProvider {
         this.seedRepository = seedRepository;
     }
 
+    @Override
     public SimulationRunResult findByRunId(Long runId) {
         if (runId == null || runId <= 0) {
             throw new ApiException(40401, "仿真运行记录不存在", HttpStatus.NOT_FOUND);
