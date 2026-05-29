@@ -7,6 +7,8 @@ public record StrategyCompareRequest(
         Long baseRunId,
 
         @NotNull(message = "compareRunId 不能为空")
-        Long compareRunId
+        Long compareRunId,
+
+        String compareType
 ) {
 }

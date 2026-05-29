@@ -18,11 +18,13 @@ export const useSimulationStore = defineStore('simulation', () => {
   const restaurants = ref([])
   const windows = ref([])
   const dishes = ref([])
+  const initialized = ref(false)
 
   const selectedProfileId = ref('')
   const selectedScenarioId = ref('')
   const profileForm = ref({})
   const scenarioForm = ref({})
+  const strategyForm = ref(defaultStrategyForm())
 
   const currentRun = ref(null)
   const baseRun = ref(null)
@@ -33,6 +35,8 @@ export const useSimulationStore = defineStore('simulation', () => {
   const loading = ref(false)
   const running = ref(false)
   const comparing = ref(false)
+  const lastRunMeta = ref(loadLastRunMeta())
+  let initializePromise = null
 
   const timePoints = computed(() => currentRun.value?.timePoints || [])
   const currentTimePoint = computed(() => {
@@ -46,9 +50,16 @@ export const useSimulationStore = defineStore('simulation', () => {
     timePoints.value.length ? timePoints.value[timePoints.value.length - 1].minute : 0,
   )
 
-  async function initializeDashboard() {
+  async function initializeDashboard({ force = false } = {}) {
+    if (initialized.value && !force) {
+      return
+    }
+    if (initializePromise && !force) {
+      return initializePromise
+    }
+
     loading.value = true
-    try {
+    initializePromise = (async () => {
       const [profileData, scenarioData, restaurantData, windowData, dishData] =
         await Promise.all([
           getUserProfiles(),
@@ -62,9 +73,54 @@ export const useSimulationStore = defineStore('simulation', () => {
       restaurants.value = restaurantData
       windows.value = windowData
       dishes.value = dishData
-      applyProfilePreset(profileData[0]?.profileId)
-      applyScenarioPreset(scenarioData[0]?.scenarioId)
+
+      const savedScheme = loadSavedScheme()
+      const profileId =
+        selectedProfileId.value && profileData.some((item) => item.profileId === selectedProfileId.value)
+          ? selectedProfileId.value
+          : savedScheme?.selectedProfileId && profileData.some((item) => item.profileId === savedScheme.selectedProfileId)
+            ? savedScheme.selectedProfileId
+            : profileData[0]?.profileId
+      const scenarioId =
+        selectedScenarioId.value && scenarioData.some((item) => item.scenarioId === selectedScenarioId.value)
+          ? selectedScenarioId.value
+          : savedScheme?.selectedScenarioId && scenarioData.some((item) => item.scenarioId === savedScheme.selectedScenarioId)
+            ? savedScheme.selectedScenarioId
+            : scenarioData[0]?.scenarioId
+
+      if (profileId) {
+        applyProfilePreset(profileId)
+      }
+      if (scenarioId) {
+        applyScenarioPreset(scenarioId)
+      }
+
+      if (savedScheme?.profileForm) {
+        profileForm.value = {
+          ...profileForm.value,
+          ...clone(savedScheme.profileForm),
+        }
+      }
+      if (savedScheme?.scenarioForm) {
+        scenarioForm.value = {
+          ...scenarioForm.value,
+          ...clone(savedScheme.scenarioForm),
+        }
+      }
+      if (savedScheme?.strategyForm) {
+        strategyForm.value = {
+          ...defaultStrategyForm(),
+          ...clone(savedScheme.strategyForm),
+        }
+      }
+
+      initialized.value = true
+    })()
+
+    try {
+      await initializePromise
     } finally {
+      initializePromise = null
       loading.value = false
     }
   }
@@ -93,6 +149,7 @@ export const useSimulationStore = defineStore('simulation', () => {
       currentRun.value = run
       currentMinute.value = run.timePoints.at(-1)?.minute || 0
       await refreshRecommendation()
+      lastRunMeta.value = rememberRun(run)
       ElMessage.success('仿真完成')
     } finally {
       running.value = false
@@ -111,6 +168,20 @@ export const useSimulationStore = defineStore('simulation', () => {
 
   function setCurrentMinute(minute) {
     currentMinute.value = minute
+  }
+
+  function resetForms() {
+    const profileId = selectedProfileId.value || profiles.value[0]?.profileId
+    const scenarioId = selectedScenarioId.value || scenarios.value[0]?.scenarioId
+
+    if (profileId) {
+      applyProfilePreset(profileId)
+    }
+    if (scenarioId) {
+      applyScenarioPreset(scenarioId)
+    }
+    strategyForm.value = defaultStrategyForm()
+    ElMessage.success('已重置为当前预设')
   }
 
   function setBaseRun() {
@@ -145,6 +216,7 @@ export const useSimulationStore = defineStore('simulation', () => {
         baseRunId: baseRun.value.runId,
         compareRunId: run.runId,
       })
+      lastRunMeta.value = rememberRun(run)
       ElMessage.success('对比完成')
     } finally {
       comparing.value = false
@@ -157,16 +229,31 @@ export const useSimulationStore = defineStore('simulation', () => {
     comparison.value = null
   }
 
+  function saveCurrentScheme() {
+    const payload = {
+      selectedProfileId: selectedProfileId.value,
+      selectedScenarioId: selectedScenarioId.value,
+      profileForm: clone(profileForm.value),
+      scenarioForm: clone(scenarioForm.value),
+      strategyForm: clone(strategyForm.value),
+      savedAt: new Date().toISOString(),
+    }
+    saveScheme(payload)
+    ElMessage.success('当前方案已保存到本地')
+  }
+
   return {
     profiles,
     scenarios,
     restaurants,
     windows,
     dishes,
+    initialized,
     selectedProfileId,
     selectedScenarioId,
     profileForm,
     scenarioForm,
+    strategyForm,
     currentRun,
     baseRun,
     compareRun,
@@ -178,18 +265,71 @@ export const useSimulationStore = defineStore('simulation', () => {
     loading,
     running,
     comparing,
+    lastRunMeta,
     initializeDashboard,
     applyProfilePreset,
     applyScenarioPreset,
     runCurrentSimulation,
     refreshRecommendation,
     setCurrentMinute,
+    resetForms,
     setBaseRun,
     runCompareSimulation,
     clearComparison,
+    saveCurrentScheme,
   }
 })
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
+}
+
+function defaultStrategyForm() {
+  return {
+    stagedWindowOpening: 'ENABLED',
+    popularDishRestock: 'SMART',
+    peakDiversion: 'ENABLED',
+  }
+}
+
+function saveScheme(payload) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem('bjtu-dining-saved-scheme', JSON.stringify(payload))
+}
+
+function loadSavedScheme() {
+  if (typeof window === 'undefined') return null
+  const raw = window.localStorage.getItem('bjtu-dining-saved-scheme')
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function rememberRun(run) {
+  const meta = {
+    runId: run.runId,
+    createdAt: run.createdAt || new Date().toISOString(),
+    status: run.status || 'FINISHED',
+    scenarioName: run.scenario?.name || run.scenario?.mealPeriod || '当前场景',
+    durationMinutes: run.scenario?.durationMinutes || 0,
+    avgWaitMinutes: run.metrics?.avgWaitMinutes ?? null,
+  }
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem('bjtu-dining-last-run', JSON.stringify(meta))
+  }
+  return meta
+}
+
+function loadLastRunMeta() {
+  if (typeof window === 'undefined') return null
+  const raw = window.localStorage.getItem('bjtu-dining-last-run')
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
 }

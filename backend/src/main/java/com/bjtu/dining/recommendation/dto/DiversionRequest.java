@@ -1,5 +1,6 @@
 package com.bjtu.dining.recommendation.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -10,6 +11,9 @@ public record DiversionRequest(
         Integer minute,
 
         @NotBlank(message = "targetCrowdLevel 不能为空")
-        String targetCrowdLevel
+        String targetCrowdLevel,
+
+        @Valid
+        UserProfileRequest profile
 ) {
 }

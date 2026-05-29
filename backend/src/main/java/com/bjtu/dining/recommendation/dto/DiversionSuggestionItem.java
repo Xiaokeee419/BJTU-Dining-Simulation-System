@@ -6,6 +6,10 @@ public record DiversionSuggestionItem(
         Long toRestaurantId,
         Long toWindowId,
         int suggestedUserCount,
+        double acceptanceRate,
+        int estimatedAcceptedCount,
+        double estimatedWaitReduction,
+        double tagSimilarity,
         String reason
 ) {
 }

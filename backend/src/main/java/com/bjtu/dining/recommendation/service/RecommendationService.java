@@ -25,9 +25,11 @@ import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -39,14 +41,23 @@ public class RecommendationService {
 
     private static final int DEFAULT_LIMIT = 3;
     private static final int MAX_LIMIT = 10;
+    private static final Set<String> VALID_USER_TYPES = Set.of(
+            "STUDENT",
+            "FACULTY",
+            "VISITOR",
+            "HURRY",
+            "BUDGET_SENSITIVE"
+    );
+    private static final Set<String> VALID_CROWD_LEVELS = Set.of("IDLE", "NORMAL", "BUSY", "EXTREME");
+    private static final Set<String> VALID_COMPARE_TYPES = Set.of("SCENARIO", "RECOMMENDATION_AFTER", "DIVERSION_AFTER");
 
     private final CsvSeedRepository seedRepository;
-    private final MockSimulationProvider simulationProvider;
+    private final SimulationProvider simulationProvider;
     private final RecommendationStore recommendationStore;
 
     public RecommendationService(
             CsvSeedRepository seedRepository,
-            MockSimulationProvider simulationProvider,
+            SimulationProvider simulationProvider,
             RecommendationStore recommendationStore
     ) {
         this.seedRepository = seedRepository;
@@ -56,7 +67,8 @@ public class RecommendationService {
 
     public RecommendationResult generate(RecommendationGenerateRequest request) {
         int limit = resolveLimit(request.limit());
-        validateProfile(request.profile());
+        String userType = validateProfile(request.profile());
+        PreferenceWeights weights = weightsFor(userType);
 
         SimulationRunResult simulation = loadFinishedSimulation(request.runId());
         SimulationTimePoint timePoint = selectTimePoint(simulation, request.minute());
@@ -64,15 +76,15 @@ public class RecommendationService {
         Map<Long, WindowSnapshot> windowStateById = indexWindowState(timePoint);
 
         List<RecommendationItem> restaurants = rank(
-                buildRestaurantRecommendations(timePoint, request.profile(), preferredTags),
+                buildRestaurantRecommendations(timePoint, request.profile(), preferredTags, weights, userType),
                 limit
         );
         List<RecommendationItem> windows = rank(
-                buildWindowRecommendations(timePoint, request.profile(), preferredTags, windowStateById),
+                buildWindowRecommendations(timePoint, request.profile(), preferredTags, windowStateById, weights, userType),
                 limit
         );
         List<RecommendationItem> dishes = rank(
-                buildDishRecommendations(request.profile(), preferredTags, windowStateById),
+                buildDishRecommendations(request.profile(), preferredTags, windowStateById, weights, userType),
                 limit
         );
 
@@ -99,6 +111,9 @@ public class RecommendationService {
 
     public DiversionResult generateDiversion(DiversionRequest request) {
         String targetCrowdLevel = validateCrowdLevel(request.targetCrowdLevel());
+        UserProfileRequest profile = request.profile();
+        String userType = profile == null ? "STUDENT" : validateProfile(profile);
+
         SimulationRunResult simulation = loadFinishedSimulation(request.runId());
         SimulationTimePoint timePoint = selectTimePoint(simulation, request.minute());
 
@@ -141,6 +156,16 @@ public class RecommendationService {
                 continue;
             }
 
+            double acceptanceRate = acceptanceRate(source, selectedTarget, profile, userType);
+            int estimatedAcceptedCount = Math.min(
+                    suggestedUserCount,
+                    Math.max(1, (int) Math.round(suggestedUserCount * acceptanceRate))
+            );
+            double tagSimilarity = roundTwo(windowTagSimilarity(source, selectedTarget) / 100.0);
+            double estimatedWaitReduction = roundOne(
+                    estimatedWaitReduction(source, selectedTarget, estimatedAcceptedCount)
+            );
+
             usedTargets.add(selectedTarget.windowId());
             suggestions.add(new DiversionSuggestionItem(
                     source.restaurantId(),
@@ -148,7 +173,11 @@ public class RecommendationService {
                     selectedTarget.restaurantId(),
                     selectedTarget.windowId(),
                     suggestedUserCount,
-                    diversionReason(source, selectedTarget, suggestedUserCount)
+                    roundTwo(acceptanceRate),
+                    estimatedAcceptedCount,
+                    estimatedWaitReduction,
+                    tagSimilarity,
+                    diversionReason(source, selectedTarget, acceptanceRate, estimatedWaitReduction, tagSimilarity)
             ));
             if (suggestions.size() >= 10) {
                 break;
@@ -162,6 +191,7 @@ public class RecommendationService {
     }
 
     public StrategyComparisonResult compareStrategies(StrategyCompareRequest request) {
+        String compareType = resolveCompareType(request.compareType());
         SimulationRunResult baseSimulation = loadFinishedSimulation(request.baseRunId(), "无法比较策略");
         SimulationRunResult compareSimulation = loadFinishedSimulation(request.compareRunId(), "无法比较策略");
         EvaluationMetrics baseMetrics = baseSimulation.metrics();
@@ -171,25 +201,33 @@ public class RecommendationService {
         }
 
         double avgWaitDelta = roundOne(compareMetrics.avgWaitMinutes() - baseMetrics.avgWaitMinutes());
+        int maxWaitDelta = compareMetrics.maxWaitMinutes() - baseMetrics.maxWaitMinutes();
         int maxQueueDelta = compareMetrics.maxQueueLength() - baseMetrics.maxQueueLength();
         int busyWindowCountDelta = compareMetrics.busyWindowCount() - baseMetrics.busyWindowCount();
         int extremeWindowCountDelta = compareMetrics.extremeWindowCount() - baseMetrics.extremeWindowCount();
         int servedUserCountDelta = compareMetrics.servedUserCount() - baseMetrics.servedUserCount();
+        int unservedUserCountDelta = compareMetrics.unservedUserCount() - baseMetrics.unservedUserCount();
 
         return new StrategyComparisonResult(
                 request.baseRunId(),
                 request.compareRunId(),
+                compareType,
                 avgWaitDelta,
+                maxWaitDelta,
                 maxQueueDelta,
                 busyWindowCountDelta,
                 extremeWindowCountDelta,
                 servedUserCountDelta,
+                unservedUserCountDelta,
                 buildComparisonConclusion(
+                        compareType,
                         avgWaitDelta,
+                        maxWaitDelta,
                         maxQueueDelta,
                         busyWindowCountDelta,
                         extremeWindowCountDelta,
-                        servedUserCountDelta
+                        servedUserCountDelta,
+                        unservedUserCountDelta
                 )
         );
     }
@@ -197,7 +235,9 @@ public class RecommendationService {
     private List<RecommendationItem> buildRestaurantRecommendations(
             SimulationTimePoint timePoint,
             UserProfileRequest profile,
-            Set<String> preferredTags
+            Set<String> preferredTags,
+            PreferenceWeights weights,
+            String userType
     ) {
         List<RecommendationItem> items = new ArrayList<>();
         for (RestaurantSnapshot snapshot : timePoint.restaurants()) {
@@ -205,32 +245,49 @@ public class RecommendationService {
             if (restaurant == null || !"OPEN".equals(restaurant.status())) {
                 continue;
             }
-            double avgWait = snapshot.windows().stream().mapToInt(WindowSnapshot::waitMinutes).average().orElse(0);
+
+            List<WindowParameter> windows = seedRepository.windowsByRestaurant(snapshot.restaurantId());
+            Optional<WindowParameter> bestWindow = windows.stream()
+                    .max(Comparator.comparingDouble((WindowParameter window) -> TagMatcher.matchScore(preferredTags, window.matchingTags()))
+                            .thenComparingDouble(WindowParameter::popularity));
+            double avgWait = snapshot.windows().stream().mapToInt(WindowSnapshot::waitMinutes).average().orElse(0.0);
             String worstCrowd = worstCrowd(snapshot.windows());
-            double tagScore = seedRepository.windowsByRestaurant(snapshot.restaurantId()).stream()
-                    .mapToDouble(window -> TagMatcher.matchScore(preferredTags, window.matchingTags()))
-                    .max()
-                    .orElse(25.0);
-            double budgetScore = seedRepository.windowsByRestaurant(snapshot.restaurantId()).stream()
+            double tagScore = bestWindow
+                    .map(window -> TagMatcher.matchScore(preferredTags, window.matchingTags()))
+                    .orElse(55.0);
+            double budgetScore = windows.stream()
                     .mapToDouble(window -> windowBudgetScore(window, profile))
                     .max()
-                    .orElse(20.0);
-            double score = waitScore((int) Math.round(avgWait), profile.waitingToleranceMinutes()) * 0.35
-                    + crowdScore(worstCrowd) * 0.25
-                    + tagScore * 0.20
-                    + restaurant.baseAttraction() * 100 * 0.10
-                    + budgetScore * 0.10;
+                    .orElse(45.0);
+            double popularityScore = windows.stream()
+                    .mapToDouble(window -> window.popularity() * 100.0)
+                    .average()
+                    .orElse(55.0);
+            ScoreCard scoreCard = scoreCard(weights, factorScores(
+                    "taste", tagScore,
+                    "budget", budgetScore,
+                    "wait", waitScore((int) Math.round(avgWait), profile.waitingToleranceMinutes()),
+                    "crowd", crowdScore(worstCrowd),
+                    "popularity", popularityScore,
+                    "restaurantAttraction", restaurant.baseAttraction() * 100.0
+            ));
+            List<String> matchedTags = bestWindow
+                    .map(window -> matchedTags(preferredTags, window.matchingTags()))
+                    .orElse(List.of());
+
             items.add(new RecommendationItem(
                     "RESTAURANT",
                     snapshot.restaurantId(),
                     snapshot.name(),
-                    round(score),
+                    scoreCard.total(),
                     0,
-                    restaurantReason(avgWait, worstCrowd, tagScore, budgetScore),
+                    restaurantReason(profile, userType, matchedTags, avgWait, worstCrowd, budgetScore),
                     snapshot.restaurantId(),
-                    null,
+                    bestWindow.map(WindowParameter::windowId).orElse(null),
                     (int) Math.round(avgWait),
-                    worstCrowd
+                    worstCrowd,
+                    scoreCard.breakdown(),
+                    matchedTags
             ));
         }
         return items;
@@ -240,7 +297,9 @@ public class RecommendationService {
             SimulationTimePoint timePoint,
             UserProfileRequest profile,
             Set<String> preferredTags,
-            Map<Long, WindowSnapshot> windowStateById
+            Map<Long, WindowSnapshot> windowStateById,
+            PreferenceWeights weights,
+            String userType
     ) {
         List<RecommendationItem> items = new ArrayList<>();
         for (WindowParameter window : seedRepository.windows()) {
@@ -248,24 +307,31 @@ public class RecommendationService {
             if (state == null || !"OPEN".equals(state.status()) || !"OPEN".equals(window.status())) {
                 continue;
             }
+
             double tagScore = TagMatcher.matchScore(preferredTags, window.matchingTags());
             double budgetScore = windowBudgetScore(window, profile);
-            double score = waitScore(state.waitMinutes(), profile.waitingToleranceMinutes()) * 0.35
-                    + crowdScore(state.crowdLevel()) * 0.20
-                    + tagScore * 0.20
-                    + budgetScore * 0.15
-                    + window.popularity() * 100 * 0.10;
+            ScoreCard scoreCard = scoreCard(weights, factorScores(
+                    "taste", tagScore,
+                    "budget", budgetScore,
+                    "wait", waitScore(state.waitMinutes(), profile.waitingToleranceMinutes()),
+                    "crowd", crowdScore(state.crowdLevel()),
+                    "popularity", window.popularity() * 100.0
+            ));
+            List<String> matchedTags = matchedTags(preferredTags, window.matchingTags());
+
             items.add(new RecommendationItem(
                     "WINDOW",
                     window.windowId(),
                     window.name(),
-                    round(score),
+                    scoreCard.total(),
                     0,
-                    windowReason(state.waitMinutes(), state.crowdLevel(), tagScore, budgetScore),
+                    windowReason(profile, userType, matchedTags, state.waitMinutes(), state.crowdLevel(), budgetScore),
                     window.restaurantId(),
                     window.windowId(),
                     state.waitMinutes(),
-                    state.crowdLevel()
+                    state.crowdLevel(),
+                    scoreCard.breakdown(),
+                    matchedTags
             ));
         }
         return items;
@@ -274,7 +340,9 @@ public class RecommendationService {
     private List<RecommendationItem> buildDishRecommendations(
             UserProfileRequest profile,
             Set<String> preferredTags,
-            Map<Long, WindowSnapshot> windowStateById
+            Map<Long, WindowSnapshot> windowStateById,
+            PreferenceWeights weights,
+            String userType
     ) {
         List<RecommendationItem> items = new ArrayList<>();
         for (DishParameter dish : seedRepository.dishes()) {
@@ -283,26 +351,34 @@ public class RecommendationService {
             if (state == null || window == null || !"OPEN".equals(state.status()) || !"OPEN".equals(window.status())) {
                 continue;
             }
+
             int estimatedWait = state.waitMinutes() + dish.prepTimeMinutes();
             double tagScore = TagMatcher.matchScore(preferredTags, dish.matchingTags());
             double budgetScore = dishBudgetScore(dish, profile);
-            double prepScore = Math.max(0, 100 - dish.prepTimeMinutes() * 8.0);
-            double score = tagScore * 0.30
-                    + budgetScore * 0.25
-                    + waitScore(estimatedWait, profile.waitingToleranceMinutes()) * 0.20
-                    + dish.popularity() * 100 * 0.15
-                    + prepScore * 0.10;
+            double prepScore = Math.max(0.0, 100.0 - dish.prepTimeMinutes() * 8.0);
+            ScoreCard scoreCard = scoreCard(weights, factorScores(
+                    "taste", tagScore,
+                    "budget", budgetScore,
+                    "wait", waitScore(estimatedWait, profile.waitingToleranceMinutes()),
+                    "crowd", crowdScore(state.crowdLevel()),
+                    "popularity", dish.popularity() * 100.0,
+                    "prep", prepScore
+            ));
+            List<String> matchedTags = matchedTags(preferredTags, dish.matchingTags());
+
             items.add(new RecommendationItem(
                     "DISH",
                     dish.dishId(),
                     dish.name(),
-                    round(score),
+                    scoreCard.total(),
                     0,
-                    dishReason(dish, estimatedWait, tagScore, budgetScore),
+                    dishReason(profile, userType, matchedTags, estimatedWait, state.crowdLevel(), budgetScore, dish.prepTimeMinutes()),
                     dish.restaurantId(),
                     dish.windowId(),
                     estimatedWait,
-                    state.crowdLevel()
+                    state.crowdLevel(),
+                    scoreCard.breakdown(),
+                    matchedTags
             ));
         }
         return items;
@@ -338,35 +414,50 @@ public class RecommendationService {
     }
 
     private String buildComparisonConclusion(
+            String compareType,
             double avgWaitDelta,
+            int maxWaitDelta,
             int maxQueueDelta,
             int busyWindowCountDelta,
             int extremeWindowCountDelta,
-            int servedUserCountDelta
+            int servedUserCountDelta,
+            int unservedUserCountDelta
     ) {
         List<String> parts = new ArrayList<>();
-        parts.add("对比场景平均等待时间" + deltaText(avgWaitDelta, "分钟"));
+        parts.add(compareTypePrefix(compareType) + "平均等待时间" + deltaText(avgWaitDelta, "分钟"));
+        parts.add("最大等待时间" + deltaText(maxWaitDelta, "分钟"));
         parts.add("最大排队长度" + deltaText(maxQueueDelta, "人"));
         parts.add("拥挤窗口数量" + deltaText(busyWindowCountDelta, "个"));
         parts.add("极端拥挤窗口数量" + deltaText(extremeWindowCountDelta, "个"));
         parts.add("已服务人数" + deltaText(servedUserCountDelta, "人"));
+        parts.add("未服务人数" + deltaText(unservedUserCountDelta, "人"));
 
         int score = 0;
         score += avgWaitDelta < 0 ? 2 : avgWaitDelta > 0 ? -2 : 0;
+        score += maxWaitDelta < 0 ? 1 : maxWaitDelta > 0 ? -1 : 0;
         score += maxQueueDelta < 0 ? 1 : maxQueueDelta > 0 ? -1 : 0;
         score += busyWindowCountDelta < 0 ? 1 : busyWindowCountDelta > 0 ? -1 : 0;
         score += extremeWindowCountDelta < 0 ? 1 : extremeWindowCountDelta > 0 ? -1 : 0;
         score += servedUserCountDelta > 0 ? 1 : servedUserCountDelta < 0 ? -1 : 0;
+        score += unservedUserCountDelta < 0 ? 1 : unservedUserCountDelta > 0 ? -1 : 0;
 
         String summary;
-        if (score >= 3) {
-            summary = "整体分流效果较好。";
-        } else if (score <= -3) {
-            summary = "对比场景压力有所上升，建议调整窗口开放或分流策略。";
+        if (score >= 4) {
+            summary = "整体策略效果较好。";
+        } else if (score <= -4) {
+            summary = "当前策略带来的压力偏高，建议调整推荐权重或分流目标。";
         } else {
             summary = "整体效果变化不明显，可结合具体窗口排队情况继续观察。";
         }
         return String.join("，", parts) + "，" + summary;
+    }
+
+    private String compareTypePrefix(String compareType) {
+        return switch (compareType) {
+            case "RECOMMENDATION_AFTER" -> "应用推荐引导后";
+            case "DIVERSION_AFTER" -> "应用分流策略后";
+            default -> "对比场景";
+        };
     }
 
     private String deltaText(double delta, String unit) {
@@ -398,29 +489,48 @@ public class RecommendationService {
 
     private String validateCrowdLevel(String crowdLevel) {
         String normalized = crowdLevel == null ? "" : crowdLevel.trim().toUpperCase(Locale.ROOT);
-        Set<String> validCrowdLevels = Set.of("IDLE", "NORMAL", "BUSY", "EXTREME");
-        if (!validCrowdLevels.contains(normalized)) {
+        if (!VALID_CROWD_LEVELS.contains(normalized)) {
             throw new ApiException(40002, "枚举值非法", HttpStatus.BAD_REQUEST,
                     Map.of("field", "targetCrowdLevel", "reason", "targetCrowdLevel 不在允许范围内"));
         }
         return normalized;
     }
 
+    private String resolveCompareType(String compareType) {
+        if (compareType == null || compareType.isBlank()) {
+            return "SCENARIO";
+        }
+        String normalized = compareType.trim().toUpperCase(Locale.ROOT);
+        if (!VALID_COMPARE_TYPES.contains(normalized)) {
+            throw new ApiException(40002, "枚举值非法", HttpStatus.BAD_REQUEST,
+                    Map.of("field", "compareType", "reason", "compareType 不在允许范围内"));
+        }
+        return normalized;
+    }
+
     private List<WindowDiversionCandidate> findSourceWindows(SimulationTimePoint timePoint, String targetCrowdLevel) {
         int targetWeight = crowdWeight(targetCrowdLevel);
+        int targetWaitThreshold = waitThresholdForLevel(targetCrowdLevel);
         List<WindowDiversionCandidate> sources = new ArrayList<>();
         for (RestaurantSnapshot restaurant : timePoint.restaurants()) {
             for (WindowSnapshot window : restaurant.windows()) {
                 WindowParameter parameter = seedRepository.window(window.windowId());
                 boolean crowded = "BUSY".equals(window.crowdLevel()) || "EXTREME".equals(window.crowdLevel());
-                if (parameter != null && crowded && crowdWeight(window.crowdLevel()) > targetWeight
-                        && "OPEN".equals(window.status()) && "OPEN".equals(parameter.status())) {
+                int minQueueForDiversion = parameter == null ? 3 : Math.max(3, (int) Math.ceil(parameter.serviceRatePerMinute() * 2));
+                if (parameter != null
+                        && crowded
+                        && crowdWeight(window.crowdLevel()) > targetWeight
+                        && window.waitMinutes() > targetWaitThreshold
+                        && window.queueLength() >= minQueueForDiversion
+                        && "OPEN".equals(window.status())
+                        && "OPEN".equals(parameter.status())) {
                     sources.add(new WindowDiversionCandidate(restaurant, window, parameter));
                 }
             }
         }
         return sources.stream()
-                .sorted(Comparator.comparingInt(WindowDiversionCandidate::waitMinutes).reversed())
+                .sorted(Comparator.comparingInt(WindowDiversionCandidate::waitMinutes).reversed()
+                        .thenComparingInt(WindowDiversionCandidate::queueLength).reversed())
                 .toList();
     }
 
@@ -446,7 +556,8 @@ public class RecommendationService {
         double tagScore = windowTagSimilarity(source, target);
         double crowdScore = 20.0 - crowdWeight(target.crowdLevel()) * 4.0;
         double serviceScore = Math.min(20.0, target.serviceRatePerMinute() * 8.0);
-        return waitGap * 0.45 + tagScore * 0.30 + crowdScore * 0.15 + serviceScore * 0.10;
+        double sameRestaurantBonus = source.restaurantId().equals(target.restaurantId()) ? 8.0 : 0.0;
+        return waitGap * 0.42 + tagScore * 0.28 + crowdScore * 0.15 + serviceScore * 0.10 + sameRestaurantBonus * 0.05;
     }
 
     private double windowTagSimilarity(WindowDiversionCandidate source, WindowDiversionCandidate target) {
@@ -472,28 +583,105 @@ public class RecommendationService {
     }
 
     private int maxQueueForLevel(WindowDiversionCandidate candidate, String targetCrowdLevel) {
-        int maxWaitMinutes = switch (targetCrowdLevel) {
+        int maxWaitMinutes = waitThresholdForLevel(targetCrowdLevel);
+        if ("EXTREME".equals(targetCrowdLevel)) {
+            maxWaitMinutes = Math.max(20, candidate.waitMinutes());
+        }
+        return Math.max(0, (int) Math.floor(maxWaitMinutes * candidate.serviceRatePerMinute()));
+    }
+
+    private int waitThresholdForLevel(String crowdLevel) {
+        return switch (crowdLevel) {
             case "IDLE" -> 4;
             case "NORMAL" -> 9;
             case "BUSY" -> 19;
-            default -> Math.max(20, candidate.waitMinutes());
+            default -> Integer.MAX_VALUE;
         };
-        return Math.max(0, (int) Math.floor(maxWaitMinutes * candidate.serviceRatePerMinute()));
+    }
+
+    private double acceptanceRate(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            UserProfileRequest profile,
+            String userType
+    ) {
+        double tagSimilarity = windowTagSimilarity(source, target) / 100.0;
+        double waitReduction = Math.max(0, source.waitMinutes() - target.waitMinutes());
+        double rate = 0.12
+                + Math.min(0.30, waitReduction * 0.025)
+                + tagSimilarity * 0.22
+                + (source.restaurantId().equals(target.restaurantId()) ? 0.08 : -0.05);
+
+        rate += switch (userType) {
+            case "HURRY" -> 0.14;
+            case "BUDGET_SENSITIVE" -> 0.03;
+            case "FACULTY" -> 0.05;
+            case "VISITOR" -> -0.02;
+            default -> 0.06;
+        };
+
+        if (profile != null) {
+            rate += budgetAcceptanceDelta(source, target, profile, userType);
+            rate += target.waitMinutes() <= profile.waitingToleranceMinutes() ? 0.04 : -0.04;
+        }
+
+        return clamp(rate, 0.05, 0.95);
+    }
+
+    private double budgetAcceptanceDelta(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            UserProfileRequest profile,
+            String userType
+    ) {
+        double sourceDistance = budgetDistance(source.averagePrice(), profile.budgetMin(), profile.budgetMax());
+        double targetDistance = budgetDistance(target.averagePrice(), profile.budgetMin(), profile.budgetMax());
+        double delta = (sourceDistance - targetDistance) * 0.02;
+        if ("BUDGET_SENSITIVE".equals(userType) && target.averagePrice() > source.averagePrice()) {
+            delta -= Math.min(0.12, (target.averagePrice() - source.averagePrice()) * 0.02);
+        }
+        return clamp(delta, -0.18, 0.18);
+    }
+
+    private double budgetDistance(double price, double budgetMin, double budgetMax) {
+        if (price < budgetMin) {
+            return budgetMin - price;
+        }
+        if (price > budgetMax) {
+            return price - budgetMax;
+        }
+        return 0.0;
+    }
+
+    private double estimatedWaitReduction(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            int estimatedAcceptedCount
+    ) {
+        double rawGap = Math.max(0, source.waitMinutes() - target.waitMinutes());
+        if (rawGap <= 0 || estimatedAcceptedCount <= 0) {
+            return 0.0;
+        }
+        double loadRatio = Math.min(1.0, estimatedAcceptedCount / Math.max(1.0, source.queueLength()));
+        return rawGap * Math.max(0.35, loadRatio);
     }
 
     private String diversionReason(
             WindowDiversionCandidate source,
             WindowDiversionCandidate target,
-            int suggestedUserCount
+            double acceptanceRate,
+            double estimatedWaitReduction,
+            double tagSimilarity
     ) {
-        String tagText = windowTagSimilarity(source, target) >= 70.0 ? "口味标签相近，" : "";
-        return source.restaurantName() + source.windowName()
-                + "当前拥挤度为 " + source.crowdLevel()
-                + "，预计等待 " + source.waitMinutes()
-                + " 分钟；" + target.restaurantName() + target.windowName()
-                + "等待约 " + target.waitMinutes()
-                + " 分钟，" + tagText
-                + "建议分流约 " + suggestedUserCount + " 人。";
+        String similarityText = tagSimilarity >= 0.70 ? "口味相近" : tagSimilarity >= 0.45 ? "口味差异较小" : "口味存在一定差异";
+        return target.restaurantName() + target.windowName()
+                + "等待更短，" + similarityText
+                + "，预计约 " + formatPercent(acceptanceRate)
+                + " 用户接受分流，可减少约 " + formatDelta(estimatedWaitReduction) + " 分钟等待。";
+    }
+
+    private String formatPercent(double rate) {
+        return Math.round(rate * 100) + "%";
     }
 
     private int resolveLimit(Integer limit) {
@@ -505,16 +693,21 @@ public class RecommendationService {
         return resolved;
     }
 
-    private void validateProfile(UserProfileRequest profile) {
+    private String validateProfile(UserProfileRequest profile) {
         if (profile.budgetMin() > profile.budgetMax()) {
             throw new ApiException(40001, "参数校验失败", HttpStatus.BAD_REQUEST,
                     Map.of("field", "profile.budgetMin", "reason", "budgetMin 必须小于等于 budgetMax"));
         }
-        Set<String> validUserTypes = Set.of("STUDENT", "FACULTY", "VISITOR", "HURRY", "BUDGET_SENSITIVE");
-        if (!validUserTypes.contains(profile.userType())) {
+        String userType = normalizeUserType(profile.userType());
+        if (!VALID_USER_TYPES.contains(userType)) {
             throw new ApiException(40002, "枚举值非法", HttpStatus.BAD_REQUEST,
                     Map.of("field", "profile.userType", "reason", "userType 不在允许范围内"));
         }
+        return userType;
+    }
+
+    private String normalizeUserType(String userType) {
+        return userType == null ? "" : userType.trim().toUpperCase(Locale.ROOT);
     }
 
     private Map<Long, WindowSnapshot> indexWindowState(SimulationTimePoint timePoint) {
@@ -580,12 +773,19 @@ public class RecommendationService {
     }
 
     private double windowBudgetScore(WindowParameter window, UserProfileRequest profile) {
-        boolean intersects = window.priceMin() <= profile.budgetMax() && window.priceMax() >= profile.budgetMin();
-        if (!intersects) {
-            return 20.0;
-        }
         boolean fullyInside = window.priceMin() >= profile.budgetMin() && window.priceMax() <= profile.budgetMax();
-        return fullyInside ? 100.0 : 75.0;
+        if (fullyInside) {
+            return 100.0;
+        }
+        boolean intersects = window.priceMin() <= profile.budgetMax() && window.priceMax() >= profile.budgetMin();
+        if (intersects) {
+            return 72.0;
+        }
+        double gap = Math.min(
+                Math.abs(window.priceMin() - profile.budgetMax()),
+                Math.abs(window.priceMax() - profile.budgetMin())
+        );
+        return gap <= 4 ? 45.0 : 15.0;
     }
 
     private double dishBudgetScore(DishParameter dish, UserProfileRequest profile) {
@@ -595,17 +795,18 @@ public class RecommendationService {
         double distance = dish.price() < profile.budgetMin()
                 ? profile.budgetMin() - dish.price()
                 : dish.price() - profile.budgetMax();
-        return Math.max(10.0, 70.0 - distance * 8.0);
+        return Math.max(5.0, 75.0 - distance * 9.0);
     }
 
     private double waitScore(int waitMinutes, int toleranceMinutes) {
-        if (waitMinutes <= Math.max(1, toleranceMinutes / 2)) {
+        int safeTolerance = Math.max(1, toleranceMinutes);
+        if (waitMinutes <= safeTolerance / 2) {
             return 100.0;
         }
-        if (waitMinutes <= toleranceMinutes) {
-            return 80.0;
+        if (waitMinutes <= safeTolerance) {
+            return 82.0;
         }
-        return Math.max(0.0, 80.0 - (waitMinutes - toleranceMinutes) * 6.0);
+        return Math.max(0.0, 82.0 - (waitMinutes - safeTolerance) * 7.0);
     }
 
     private double crowdScore(String crowdLevel) {
@@ -613,43 +814,201 @@ public class RecommendationService {
             case "IDLE" -> 100.0;
             case "NORMAL" -> 85.0;
             case "BUSY" -> 50.0;
-            case "EXTREME" -> 20.0;
+            case "EXTREME" -> 18.0;
             default -> 40.0;
         };
     }
 
-    private String restaurantReason(double avgWait, String crowdLevel, double tagScore, double budgetScore) {
-        return reasonPrefix(tagScore, budgetScore)
-                + "餐厅平均等待约 " + Math.round(avgWait) + " 分钟，当前拥挤度为 " + crowdLevel + "。";
+    private List<String> matchedTags(Set<String> preferredTags, String candidateTags) {
+        if (preferredTags.isEmpty()) {
+            return List.of();
+        }
+        Set<String> candidate = TagMatcher.normalize(candidateTags);
+        return preferredTags.stream()
+                .filter(candidate::contains)
+                .sorted()
+                .toList();
     }
 
-    private String windowReason(int waitMinutes, String crowdLevel, double tagScore, double budgetScore) {
-        return reasonPrefix(tagScore, budgetScore)
-                + "预计等待 " + waitMinutes + " 分钟，当前拥挤度为 " + crowdLevel + "。";
+    private String restaurantReason(
+            UserProfileRequest profile,
+            String userType,
+            List<String> matchedTags,
+            double avgWait,
+            String crowdLevel,
+            double budgetScore
+    ) {
+        int roundedWait = (int) Math.round(avgWait);
+        return String.join("，",
+                matchedTagText(matchedTags),
+                budgetText(budgetScore),
+                "餐厅平均等待约 " + roundedWait + " 分钟",
+                toleranceText(roundedWait, profile.waitingToleranceMinutes()),
+                "当前拥挤度为 " + crowdLevel + advantageText(crowdLevel, roundedWait, profile.waitingToleranceMinutes()),
+                personaText(userType)
+        ) + "。";
     }
 
-    private String dishReason(DishParameter dish, int estimatedWait, double tagScore, double budgetScore) {
-        String budgetText = budgetScore >= 100 ? "价格在预算范围内" : "价格与预算接近";
-        String tasteText = tagScore >= 70 ? "符合口味偏好" : "口味匹配度一般";
-        return tasteText + "，" + budgetText + "，热门度较高，预计总等待约 "
-                + estimatedWait + " 分钟。";
+    private String windowReason(
+            UserProfileRequest profile,
+            String userType,
+            List<String> matchedTags,
+            int waitMinutes,
+            String crowdLevel,
+            double budgetScore
+    ) {
+        return String.join("，",
+                matchedTagText(matchedTags),
+                budgetText(budgetScore),
+                "预计等待 " + waitMinutes + " 分钟",
+                toleranceText(waitMinutes, profile.waitingToleranceMinutes()),
+                "当前拥挤度为 " + crowdLevel + advantageText(crowdLevel, waitMinutes, profile.waitingToleranceMinutes()),
+                personaText(userType)
+        ) + "。";
     }
 
-    private String reasonPrefix(double tagScore, double budgetScore) {
-        String tasteText = tagScore >= 70 ? "口味匹配，" : "口味匹配度一般，";
-        String budgetText = budgetScore >= 75 ? "预算匹配，" : "预算匹配度一般，";
-        return tasteText + budgetText;
+    private String dishReason(
+            UserProfileRequest profile,
+            String userType,
+            List<String> matchedTags,
+            int estimatedWait,
+            String crowdLevel,
+            double budgetScore,
+            int prepTimeMinutes
+    ) {
+        return String.join("，",
+                matchedTagText(matchedTags),
+                budgetText(budgetScore),
+                "预计总等待约 " + estimatedWait + " 分钟",
+                toleranceText(estimatedWait, profile.waitingToleranceMinutes()),
+                "所在窗口拥挤度为 " + crowdLevel,
+                prepTimeMinutes <= 4 ? "出餐较快" : "出餐时间适中",
+                personaText(userType)
+        ) + "。";
+    }
+
+    private String matchedTagText(List<String> matchedTags) {
+        if (matchedTags == null || matchedTags.isEmpty()) {
+            return "口味覆盖较广";
+        }
+        return "匹配口味：" + String.join("、", matchedTags);
+    }
+
+    private String budgetText(double budgetScore) {
+        if (budgetScore >= 95.0) {
+            return "价格落在预算范围内";
+        }
+        if (budgetScore >= 65.0) {
+            return "价格与预算接近";
+        }
+        return "价格偏离预算";
+    }
+
+    private String toleranceText(int waitMinutes, int toleranceMinutes) {
+        return waitMinutes <= toleranceMinutes
+                ? "低于等待容忍度 " + toleranceMinutes + " 分钟"
+                : "高于等待容忍度 " + toleranceMinutes + " 分钟";
+    }
+
+    private String advantageText(String crowdLevel, int waitMinutes, int toleranceMinutes) {
+        return crowdWeight(crowdLevel) <= crowdWeight("NORMAL") && waitMinutes <= toleranceMinutes
+                ? "，相比高拥挤窗口更省时"
+                : "";
+    }
+
+    private String personaText(String userType) {
+        return switch (userType) {
+            case "HURRY" -> "更适合赶时间用户";
+            case "BUDGET_SENSITIVE" -> "更适合预算敏感用户";
+            case "FACULTY" -> "更偏向稳定和舒适体验";
+            case "VISITOR" -> "推荐理由较直观";
+            default -> "整体在口味、预算和等待之间保持平衡";
+        };
+    }
+
+    private ScoreCard scoreCard(PreferenceWeights weights, LinkedHashMap<String, Double> rawScores) {
+        double weightSum = rawScores.keySet().stream()
+                .mapToDouble(weights::weightOf)
+                .sum();
+        LinkedHashMap<String, Double> breakdown = new LinkedHashMap<>();
+        double total = 0.0;
+        for (Map.Entry<String, Double> entry : rawScores.entrySet()) {
+            double factorWeight = weights.weightOf(entry.getKey());
+            if (factorWeight <= 0 || weightSum <= 0) {
+                continue;
+            }
+            double contribution = bounded(entry.getValue()) * factorWeight / weightSum;
+            breakdown.put(entry.getKey(), round(contribution));
+            total += contribution;
+        }
+        return new ScoreCard(Collections.unmodifiableMap(breakdown), round(total));
+    }
+
+    private LinkedHashMap<String, Double> factorScores(Object... pairs) {
+        LinkedHashMap<String, Double> scores = new LinkedHashMap<>();
+        for (int i = 0; i < pairs.length; i += 2) {
+            scores.put((String) pairs[i], (Double) pairs[i + 1]);
+        }
+        return scores;
+    }
+
+    private PreferenceWeights weightsFor(String userType) {
+        return switch (userType) {
+            case "HURRY" -> new PreferenceWeights(0.12, 0.08, 0.38, 0.20, 0.10, 0.08, 0.04);
+            case "BUDGET_SENSITIVE" -> new PreferenceWeights(0.18, 0.38, 0.18, 0.10, 0.06, 0.06, 0.04);
+            case "FACULTY" -> new PreferenceWeights(0.16, 0.10, 0.28, 0.22, 0.08, 0.11, 0.05);
+            case "VISITOR" -> new PreferenceWeights(0.18, 0.10, 0.18, 0.10, 0.24, 0.14, 0.06);
+            default -> new PreferenceWeights(0.24, 0.18, 0.22, 0.14, 0.10, 0.07, 0.05);
+        };
+    }
+
+    private double bounded(double value) {
+        return Math.max(0.0, Math.min(100.0, value));
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private double round(double value) {
-        return Math.round(Math.max(0, Math.min(100, value)) * 10.0) / 10.0;
+        return Math.round(bounded(value) * 10.0) / 10.0;
     }
 
     private double roundOne(double value) {
         return Math.round(value * 10.0) / 10.0;
     }
 
+    private double roundTwo(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
     private record WindowCandidate(String restaurantName, String windowName, int waitMinutes, String crowdLevel) {
+    }
+
+    private record PreferenceWeights(
+            double taste,
+            double budget,
+            double waitWeight,
+            double crowdWeightValue,
+            double popularity,
+            double restaurantAttraction,
+            double prep
+    ) {
+        private double weightOf(String factor) {
+            return switch (factor) {
+                case "taste" -> taste;
+                case "budget" -> budget;
+                case "wait" -> waitWeight;
+                case "crowd" -> crowdWeightValue;
+                case "popularity" -> popularity;
+                case "restaurantAttraction" -> restaurantAttraction;
+                case "prep" -> prep;
+                default -> 0.0;
+            };
+        }
+    }
+
+    private record ScoreCard(Map<String, Double> breakdown, double total) {
     }
 
     private record WindowDiversionCandidate(
@@ -661,7 +1020,9 @@ public class RecommendationService {
             int waitMinutes,
             String crowdLevel,
             String matchingTags,
-            double serviceRatePerMinute
+            double serviceRatePerMinute,
+            double priceMin,
+            double priceMax
     ) {
         private WindowDiversionCandidate(
                 RestaurantSnapshot restaurant,
@@ -677,8 +1038,14 @@ public class RecommendationService {
                     window.waitMinutes(),
                     window.crowdLevel(),
                     parameter.matchingTags(),
-                    parameter.serviceRatePerMinute()
+                    parameter.serviceRatePerMinute(),
+                    parameter.priceMin(),
+                    parameter.priceMax()
             );
+        }
+
+        private double averagePrice() {
+            return (priceMin + priceMax) / 2.0;
         }
     }
 }

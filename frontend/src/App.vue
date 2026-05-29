@@ -1,7 +1,11 @@
 <template>
-  <SimulationDashboard />
+  <div class="app-shell">
+    <AppNavbar />
+    <RouterView />
+  </div>
 </template>
 
 <script setup>
-import SimulationDashboard from './views/SimulationDashboard.vue'
+import { RouterView } from 'vue-router'
+import AppNavbar from './components/AppNavbar.vue'
 </script>
