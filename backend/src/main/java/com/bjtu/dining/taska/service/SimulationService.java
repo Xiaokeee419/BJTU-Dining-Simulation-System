@@ -38,6 +38,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class SimulationService {
+    private static final double WINDOW_SELECTION_TEMPERATURE = 6.6;
+    private static final double DISH_SELECTION_TEMPERATURE = 4.2;
     private static final Map<String, Double> CROWD_SPREAD_FACTOR = Map.of(
             "IDLE", 1.25,
             "NORMAL", 1.0,
@@ -69,6 +71,7 @@ public class SimulationService {
     private final SeedDataService seedDataService;
     private final AtomicLong runIdGenerator = new AtomicLong(10000);
     private final Map<Long, SimulationRunResult> runStore = new ConcurrentHashMap<>();
+    private final Map<Long, List<DinerProfile>> cohortStore = new ConcurrentHashMap<>();
 
     public SimulationService(SeedDataService seedDataService) {
         this.seedDataService = seedDataService;
@@ -95,7 +98,8 @@ public class SimulationService {
         UserProfile profile = normalizeProfile(request == null ? null : request.profile());
         SimulationScenario scenario = normalizeScenario(request == null ? null : request.scenario());
         validate(profile, scenario);
-        return simulateRun(profile, scenario, null, null);
+        List<DinerProfile> dinerCohort = sampleVirtualDiners(seedDataService.seedData(), profile, scenario);
+        return simulateRun(profile, scenario, dinerCohort, null, null);
     }
 
     public SimulationRunResult runSimulationWithDiversion(SimulationRunWithDiversionRequest request) {
@@ -114,6 +118,10 @@ public class SimulationService {
         UserProfile profile = normalizeProfile(baseRun.profile());
         SimulationScenario scenario = normalizeScenario(baseRun.scenario());
         validate(profile, scenario);
+        List<DinerProfile> dinerCohort = cohortStore.get(baseRun.runId());
+        if (dinerCohort == null || dinerCohort.isEmpty()) {
+            throw new BadRequestException("baseRunId", "baseRun cohort is unavailable, rerun baseline simulation first");
+        }
 
         int diversionStartMinute = resolveDiversionStartMinute(baseRun, scenario, request.minute());
         DiversionPlan diversionPlan = buildDiversionPlan(
@@ -121,7 +129,7 @@ public class SimulationService {
                 request.diversionSuggestions(),
                 seedDataService.seedData()
         );
-        return simulateRun(profile, scenario, diversionPlan, baseRun.runId());
+        return simulateRun(profile, scenario, dinerCohort, diversionPlan, baseRun.runId());
     }
 
     public SimulationRunResult getRunResult(long runId) {
@@ -145,13 +153,13 @@ public class SimulationService {
     private SimulationRunResult simulateRun(
             UserProfile profile,
             SimulationScenario scenario,
+            List<DinerProfile> dinerCohort,
             DiversionPlan diversionPlan,
             Long compareSourceRunId
     ) {
         SeedData seedData = seedDataService.seedData();
-        Random rng = new Random(scenario.randomSeed());
         Set<Long> closedWindowIds = new LinkedHashSet<>(scenario.closedWindowIds());
-        List<Diner> diners = sampleVirtualDiners(seedData, profile, scenario);
+        List<DinerProfile> diners = dinerCohort;
 
         Map<Long, Integer> queueLengths = new LinkedHashMap<>();
         Map<Long, Double> serviceCarry = new LinkedHashMap<>();
@@ -188,33 +196,27 @@ public class SimulationService {
                 diversionApplied = true;
             }
 
-            while (nextDinerIndex < diners.size() && diners.get(nextDinerIndex).arrivalMinute <= minute) {
-                Diner diner = diners.get(nextDinerIndex);
+            while (nextDinerIndex < diners.size() && diners.get(nextDinerIndex).arrivalMinute() <= minute) {
+                DinerProfile diner = diners.get(nextDinerIndex);
                 WindowChoice originalChoice = chooseWindow(
                         diner,
                         seedData,
                         queueLengths,
                         closedWindowIds,
-                        scenario.mealPeriod(),
-                        rng
+                        scenario.mealPeriod()
                 );
                 WindowChoice finalChoice = maybeRedirectWindow(
+                        diner,
                         originalChoice,
                         diversionPlan,
                         minute,
                         seedData,
                         queueLengths,
                         closedWindowIds,
-                        scenario.mealPeriod(),
-                        rng
+                        scenario.mealPeriod()
                 );
-                DishSeed dish = chooseDish(diner, finalChoice.window(), seedData.dishesByWindow(), rng);
+                chooseDish(diner, finalChoice.window(), seedData.dishesByWindow());
                 queueLengths.compute(finalChoice.window().windowId(), (ignored, value) -> value == null ? 1 : value + 1);
-
-                diner.targetRestaurantId = finalChoice.window().restaurantId();
-                diner.targetWindowId = finalChoice.window().windowId();
-                diner.targetDishId = dish == null ? null : dish.dishId();
-                diner.expectedWaitMinutes = round(finalChoice.estimatedWait());
                 selectedWaits.add(finalChoice.estimatedWait());
                 nextDinerIndex++;
             }
@@ -257,6 +259,7 @@ public class SimulationService {
                 diversionPlan == null ? null : diversionPlan.startMinute()
         );
         runStore.put(runId, result);
+        cohortStore.put(runId, List.copyOf(dinerCohort));
         return result;
     }
 
@@ -394,14 +397,14 @@ public class SimulationService {
         );
     }
 
-    private List<Diner> sampleVirtualDiners(SeedData seedData, UserProfile profile, SimulationScenario scenario) {
+    private List<DinerProfile> sampleVirtualDiners(SeedData seedData, UserProfile profile, SimulationScenario scenario) {
         Random rng = new Random(scenario.randomSeed());
         List<StudentSeed> sourcePool = chooseStudentPool(seedData.students(), profile.userType(), scenario.virtualUserCount());
         List<StudentSeed> sampled = sample(sourcePool, scenario.virtualUserCount(), rng);
         Set<String> profileTags = normalizeProfileTags(profile.tasteTags());
         double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel()) * scenario.weatherFactor() * scenario.eventFactor();
 
-        List<Diner> diners = new ArrayList<>();
+        List<DinerProfile> diners = new ArrayList<>();
         for (int index = 0; index < sampled.size(); index++) {
             StudentSeed student = sampled.get(index);
             int baseArrival = arrivalMinute(student, scenario.mealPeriod());
@@ -414,19 +417,44 @@ public class SimulationService {
             );
             Set<String> preferenceTags = new LinkedHashSet<>(student.preferenceTags());
             preferenceTags.addAll(profileTags);
-            Diner diner = new Diner();
-            diner.dinerId = "D%05d".formatted(index + 1);
-            diner.sourceStudentId = student.studentId();
-            diner.userType = profile.userType();
-            diner.preferenceTags = preferenceTags;
-            diner.budgetMin = Math.max(0.0, profile.budgetMin() + randomInt(rng, -2, 2));
-            diner.budgetMax = Math.max(diner.budgetMin, profile.budgetMax() + randomInt(rng, -3, 4));
-            diner.waitingToleranceMinutes = Math.max(1, profile.waitingToleranceMinutes() + randomInt(rng, -2, 3));
-            diner.arrivalMinute = arrivalMinute;
-            diners.add(diner);
+            double budgetMin = Math.max(0.0, profile.budgetMin() + randomInt(rng, -2, 2));
+            double budgetMax = Math.max(budgetMin, profile.budgetMax() + randomInt(rng, -3, 4));
+            int waitingToleranceMinutes = Math.max(1, profile.waitingToleranceMinutes() + randomInt(rng, -2, 3));
+            double popularityBias = clamp(
+                    1.05 + rng.nextDouble() * 0.60 + ("HURRY".equals(profile.userType()) ? -0.06 : 0.12),
+                    0.85,
+                    1.80
+            );
+            double queueAversion = clamp(
+                    0.88 + rng.nextDouble() * 0.45 + ("HURRY".equals(profile.userType()) ? 0.16 : 0.0),
+                    0.70,
+                    1.55
+            );
+            double diversionAcceptanceBias = clamp(
+                    0.86 + rng.nextDouble() * 0.36 + ("HURRY".equals(profile.userType()) ? 0.10 : 0.04),
+                    0.72,
+                    1.40
+            );
+            diners.add(new DinerProfile(
+                    "D%05d".formatted(index + 1),
+                    student.studentId(),
+                    profile.userType(),
+                    Set.copyOf(preferenceTags),
+                    budgetMin,
+                    budgetMax,
+                    waitingToleranceMinutes,
+                    arrivalMinute,
+                    popularityBias,
+                    queueAversion,
+                    diversionAcceptanceBias,
+                    rng.nextDouble(),
+                    rng.nextDouble(),
+                    rng.nextDouble(),
+                    rng.nextLong()
+            ));
         }
-        diners.sort(Comparator.comparingInt((Diner item) -> item.arrivalMinute).thenComparing(item -> item.dinerId));
-        return diners;
+        diners.sort(Comparator.comparingInt(DinerProfile::arrivalMinute).thenComparing(DinerProfile::dinerId));
+        return List.copyOf(diners);
     }
 
     private List<StudentSeed> chooseStudentPool(List<StudentSeed> students, String userType, int targetCount) {
@@ -497,16 +525,14 @@ public class SimulationService {
     }
 
     private WindowChoice chooseWindow(
-            Diner diner,
+            DinerProfile diner,
             SeedData seedData,
             Map<Long, Integer> queueLengths,
             Set<Long> closedWindowIds,
-            String mealPeriod,
-            Random rng
+            String mealPeriod
     ) {
-        WindowSeed bestWindow = null;
-        double bestWait = 0.0;
-        double bestScore = -1_000_000_000;
+        List<WindowScore> scoredWindows = new ArrayList<>();
+        double maxScore = -1_000_000_000;
 
         for (WindowSeed window : seedData.windows()) {
             if (!isWindowAvailable(window, mealPeriod, closedWindowIds)) {
@@ -514,39 +540,56 @@ public class SimulationService {
             }
             RestaurantSeed restaurant = seedData.restaurantsById().get(window.restaurantId());
             double estimatedWait = windowWaitMinutes(window, queueLengths.get(window.windowId()));
-            double tagScore = tagOverlapScore(diner.preferenceTags, window.matchingTags());
-            double budgetScore = budgetOverlapScore(diner.budgetMin, diner.budgetMax, window.priceMin(), window.priceMax());
-            double waitPenalty = estimatedWait / Math.max(1, diner.waitingToleranceMinutes);
-            double waitWeight = "HURRY".equals(diner.userType) ? 0.38 : 0.22;
-            double budgetWeight = "BUDGET_SENSITIVE".equals(diner.userType) ? 0.34 : 0.18;
-            double score = restaurant.baseAttraction() * 0.18
-                    + tagScore * 0.34
+            double tagScore = tagOverlapScore(diner.preferenceTags(), window.matchingTags());
+            double budgetScore = budgetOverlapScore(diner.budgetMin(), diner.budgetMax(), window.priceMin(), window.priceMax());
+            double budgetWeight = "BUDGET_SENSITIVE".equals(diner.userType()) ? 0.22 : 0.12;
+            double popularityScore = Math.pow(window.popularity(), 0.85) * 0.34 * diner.popularityBias();
+            double attractionScore = restaurant.baseAttraction() * 0.22;
+            double waitPenalty = delayedWaitPenalty(diner, estimatedWait);
+            double score = attractionScore
+                    + tagScore * 0.24
                     + budgetScore * budgetWeight
-                    + window.popularity() * 0.16
-                    - waitPenalty * waitWeight
-                    + rng.nextDouble(-0.025, 0.025);
-            if (score > bestScore) {
-                bestScore = score;
-                bestWindow = window;
-                bestWait = estimatedWait;
-            }
+                    + popularityScore
+                    - waitPenalty
+                    + stableSignedNoise(diner.decisionSeed(), window.windowId(), 0.014);
+            maxScore = Math.max(maxScore, score);
+            scoredWindows.add(new WindowScore(window, estimatedWait, score));
         }
 
-        if (bestWindow == null) {
+        if (scoredWindows.isEmpty()) {
             throw new BadRequestException("scenario.mealPeriod", "no window is available under the current scenario");
         }
-        return new WindowChoice(bestWindow, bestWait);
+
+        double totalWeight = 0.0;
+        List<Double> weights = new ArrayList<>(scoredWindows.size());
+        for (WindowScore candidate : scoredWindows) {
+            double weight = Math.exp((candidate.rawScore() - maxScore) * WINDOW_SELECTION_TEMPERATURE);
+            weights.add(weight);
+            totalWeight += weight;
+        }
+
+        double threshold = diner.windowChoiceSample() * totalWeight;
+        double cumulative = 0.0;
+        WindowScore selected = scoredWindows.get(scoredWindows.size() - 1);
+        for (int index = 0; index < scoredWindows.size(); index++) {
+            cumulative += weights.get(index);
+            if (threshold <= cumulative) {
+                selected = scoredWindows.get(index);
+                break;
+            }
+        }
+        return new WindowChoice(selected.window(), selected.estimatedWait());
     }
 
     private WindowChoice maybeRedirectWindow(
+            DinerProfile diner,
             WindowChoice originalChoice,
             DiversionPlan diversionPlan,
             int minute,
             SeedData seedData,
             Map<Long, Integer> queueLengths,
             Set<Long> closedWindowIds,
-            String mealPeriod,
-            Random rng
+            String mealPeriod
     ) {
         if (diversionPlan == null || !diversionPlan.hasSuggestions() || minute < diversionPlan.startMinute()) {
             return originalChoice;
@@ -557,6 +600,11 @@ public class SimulationService {
             return originalChoice;
         }
 
+        WindowChoice redirectedChoice = null;
+        double bestOpportunity = -1_000_000_000;
+        int sourceQueueLength = queueLengths.getOrDefault(originalChoice.window().windowId(), 0);
+        double sourceWait = windowWaitMinutes(originalChoice.window(), sourceQueueLength);
+        double sourcePressure = queuePressureScore(originalChoice.window(), sourceQueueLength, sourceWait);
         for (ResolvedDiversionSuggestion candidate : candidates) {
             WindowSeed targetWindow = seedData.windowsById().get(candidate.toWindowId());
             if (targetWindow == null || !isWindowAvailable(targetWindow, mealPeriod, closedWindowIds)) {
@@ -567,41 +615,75 @@ public class SimulationService {
                 continue;
             }
             double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
-            if (targetWait >= Math.max(originalChoice.estimatedWait(), 20.0)) {
+            double targetPressure = queuePressureScore(targetWindow, targetQueueLength, targetWait);
+            if (targetPressure >= sourcePressure - 0.12 || targetWait > sourceWait + 2.0) {
                 continue;
             }
-            if (rng.nextDouble() > candidate.acceptanceRate()) {
+            double pressureGap = Math.max(0.0, sourcePressure - targetPressure);
+            double effectiveAcceptanceRate = clamp(
+                    candidate.acceptanceRate() * diner.diversionAcceptanceBias()
+                            + Math.min(0.18, Math.max(0.0, sourceWait - targetWait) * 0.016)
+                            + Math.min(0.10, pressureGap * 0.035),
+                    0.05,
+                    0.98
+            );
+            if (diner.diversionAcceptanceSample() > effectiveAcceptanceRate) {
                 continue;
             }
-            return new WindowChoice(targetWindow, targetWait);
+            double opportunityScore = pressureGap * 0.55
+                    + Math.max(0.0, sourceWait - targetWait) * 0.30
+                    + effectiveAcceptanceRate * 0.15;
+            if (opportunityScore > bestOpportunity) {
+                bestOpportunity = opportunityScore;
+                redirectedChoice = new WindowChoice(targetWindow, targetWait);
+            }
         }
-        return originalChoice;
+        return redirectedChoice == null ? originalChoice : redirectedChoice;
     }
 
     private DishSeed chooseDish(
-            Diner diner,
+            DinerProfile diner,
             WindowSeed window,
-            Map<Long, List<DishSeed>> dishesByWindow,
-            Random rng
+            Map<Long, List<DishSeed>> dishesByWindow
     ) {
         List<DishSeed> dishes = dishesByWindow.getOrDefault(window.windowId(), List.of());
-        DishSeed bestDish = null;
-        double bestScore = -1_000_000_000;
+        if (dishes.isEmpty()) {
+            return null;
+        }
+        List<DishScore> scoredDishes = new ArrayList<>(dishes.size());
+        double maxScore = -1_000_000_000;
         for (DishSeed dish : dishes) {
-            double budgetScore = diner.budgetMin <= dish.price() && dish.price() <= diner.budgetMax ? 1.0 : 0.25;
-            double tagScore = tagOverlapScore(diner.preferenceTags, dish.matchingTags());
+            double budgetScore = diner.budgetMin() <= dish.price() && dish.price() <= diner.budgetMax() ? 1.0 : 0.25;
+            double tagScore = tagOverlapScore(diner.preferenceTags(), dish.matchingTags());
             double prepPenalty = dish.prepTimeMinutes() / 15.0;
             double score = tagScore * 0.34
                     + budgetScore * 0.32
                     + dish.popularity() * 0.24
                     - prepPenalty * 0.10
-                    + rng.nextDouble(-0.02, 0.02);
-            if (score > bestScore) {
-                bestScore = score;
-                bestDish = dish;
+                    + stableSignedNoise(diner.decisionSeed() ^ 0x9E3779B97F4A7C15L, dish.dishId(), 0.012);
+            maxScore = Math.max(maxScore, score);
+            scoredDishes.add(new DishScore(dish, score));
+        }
+
+        double totalWeight = 0.0;
+        List<Double> weights = new ArrayList<>(scoredDishes.size());
+        for (DishScore candidate : scoredDishes) {
+            double weight = Math.exp((candidate.rawScore() - maxScore) * DISH_SELECTION_TEMPERATURE);
+            weights.add(weight);
+            totalWeight += weight;
+        }
+
+        double threshold = diner.dishChoiceSample() * totalWeight;
+        double cumulative = 0.0;
+        DishSeed selected = scoredDishes.get(scoredDishes.size() - 1).dish();
+        for (int index = 0; index < scoredDishes.size(); index++) {
+            cumulative += weights.get(index);
+            if (threshold <= cumulative) {
+                selected = scoredDishes.get(index).dish();
+                break;
             }
         }
-        return bestDish;
+        return selected;
     }
 
     private void applyDiversionToExistingQueues(
@@ -630,12 +712,23 @@ public class SimulationService {
 
             double sourceWait = windowWaitMinutes(sourceWindow, sourceQueueLength);
             double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
-            if (targetWait >= sourceWait) {
+            double sourcePressure = queuePressureScore(sourceWindow, sourceQueueLength, sourceWait);
+            double targetPressure = queuePressureScore(targetWindow, targetQueueLength, targetWait);
+            if (targetPressure >= sourcePressure - 0.10) {
                 continue;
             }
 
             int targetCapacity = Math.max(0, maxReasonableTargetQueue(targetWindow) - targetQueueLength);
-            int movedCount = Math.min(sourceQueueLength, Math.min(suggestion.estimatedAcceptedCount(), targetCapacity));
+            int balanceDrivenCount = Math.max(1, (int) Math.ceil(Math.max(0.0, sourceQueueLength - targetQueueLength) * 0.35));
+            int pressureDrivenCount = Math.max(
+                    1,
+                    (int) Math.ceil(Math.max(0.0, sourcePressure - targetPressure) * Math.max(1.0, targetWindow.serviceRatePerMinute()) * 1.8)
+            );
+            int desiredTransfer = Math.max(balanceDrivenCount, pressureDrivenCount);
+            int movedCount = Math.min(
+                    sourceQueueLength,
+                    Math.min(suggestion.estimatedAcceptedCount(), Math.min(targetCapacity, desiredTransfer))
+            );
             if (movedCount <= 0) {
                 continue;
             }
@@ -731,6 +824,33 @@ public class SimulationService {
         return Math.max(0.35, Math.min(1.0, overlap / Math.max(1.0, budgetMax - budgetMin)));
     }
 
+    private double delayedWaitPenalty(DinerProfile diner, double estimatedWait) {
+        double effectiveTolerance = Math.max(1.0, diner.waitingToleranceMinutes() / Math.max(0.65, diner.queueAversion()));
+        double waitRatio = estimatedWait / effectiveTolerance;
+        double basePenalty;
+        if (waitRatio <= 0.65) {
+            basePenalty = waitRatio * 0.05;
+        } else if (waitRatio <= 1.0) {
+            basePenalty = 0.0325 + (waitRatio - 0.65) * 0.22;
+        } else {
+            double overflow = waitRatio - 1.0;
+            basePenalty = 0.1095 + Math.pow(overflow, 1.55) * 0.40;
+        }
+        double userTypeWeight = switch (diner.userType()) {
+            case "HURRY" -> 1.28;
+            case "BUDGET_SENSITIVE" -> 0.92;
+            default -> 1.0;
+        };
+        return basePenalty * userTypeWeight;
+    }
+
+    private double queuePressureScore(WindowSeed window, int queueLength, double waitMinutes) {
+        double normalizedWait = waitMinutes / 7.0;
+        double normalizedQueue = queueLength / Math.max(1.0, window.serviceRatePerMinute() * 4.5);
+        double servicePenalty = 1.0 / Math.max(1.0, window.serviceRatePerMinute());
+        return normalizedWait * 0.95 + normalizedQueue * 0.80 + servicePenalty * 0.20;
+    }
+
     private String crowdLevelForRestaurant(int currentCount, int capacity) {
         if (capacity <= 0) {
             return "IDLE";
@@ -791,6 +911,25 @@ public class SimulationService {
         return queueLength / Math.max(0.1, window.serviceRatePerMinute());
     }
 
+    private double stableSignedNoise(long baseSeed, long salt, double amplitude) {
+        return (stableUnitInterval(baseSeed, salt) - 0.5) * 2.0 * amplitude;
+    }
+
+    private double stableUnitInterval(long baseSeed, long salt) {
+        long mixed = mix64(baseSeed ^ (salt * 0x9E3779B97F4A7C15L));
+        return ((mixed >>> 11) * 0x1.0p-53);
+    }
+
+    private long mix64(long value) {
+        long mixed = value;
+        mixed ^= mixed >>> 33;
+        mixed *= 0xff51afd7ed558ccdL;
+        mixed ^= mixed >>> 33;
+        mixed *= 0xc4ceb9fe1a85ec53L;
+        mixed ^= mixed >>> 33;
+        return mixed;
+    }
+
     private int resolvePeakMinute(SimulationRunResult run) {
         SimulationTimePoint peak = run.timePoints().stream()
                 .max(Comparator
@@ -839,6 +978,12 @@ public class SimulationService {
     private record WindowChoice(WindowSeed window, double estimatedWait) {
     }
 
+    private record WindowScore(WindowSeed window, double estimatedWait, double rawScore) {
+    }
+
+    private record DishScore(DishSeed dish, double rawScore) {
+    }
+
     private record SnapshotData(SimulationTimePoint timePoint, int maxQueueLength) {
     }
 
@@ -863,18 +1008,22 @@ public class SimulationService {
     ) {
     }
 
-    private static final class Diner {
-        private String dinerId;
-        private String sourceStudentId;
-        private String userType;
-        private Set<String> preferenceTags;
-        private double budgetMin;
-        private double budgetMax;
-        private int waitingToleranceMinutes;
-        private int arrivalMinute;
-        private Long targetRestaurantId;
-        private Long targetWindowId;
-        private Long targetDishId;
-        private double expectedWaitMinutes;
+    private record DinerProfile(
+            String dinerId,
+            String sourceStudentId,
+            String userType,
+            Set<String> preferenceTags,
+            double budgetMin,
+            double budgetMax,
+            int waitingToleranceMinutes,
+            int arrivalMinute,
+            double popularityBias,
+            double queueAversion,
+            double diversionAcceptanceBias,
+            double windowChoiceSample,
+            double dishChoiceSample,
+            double diversionAcceptanceSample,
+            long decisionSeed
+    ) {
     }
 }

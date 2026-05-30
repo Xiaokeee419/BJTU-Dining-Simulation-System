@@ -35,7 +35,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -150,35 +149,40 @@ public class RecommendationService {
         }
 
         List<DiversionSuggestionItem> suggestions = new ArrayList<>();
-        Set<Long> usedTargets = new HashSet<>();
+        Map<Long, Integer> reservedTargetLoad = new HashMap<>();
         for (WindowDiversionCandidate source : sources) {
-            Optional<WindowDiversionCandidate> target = targets.stream()
+            double sourcePressure = pressureScore(source);
+            Optional<TargetCandidate> target = targets.stream()
                     .filter(candidate -> !candidate.windowId().equals(source.windowId()))
-                    .filter(candidate -> !usedTargets.contains(candidate.windowId()))
-                    .filter(candidate -> candidate.waitMinutes() < source.waitMinutes())
-                    .filter(candidate -> targetRemainingCapacity(candidate, targetCrowdLevel) > 0)
-                    .max(Comparator.comparingDouble(candidate -> diversionTargetScore(source, candidate)));
+                    .map(candidate -> new TargetCandidate(
+                            candidate,
+                            pressureScore(candidate),
+                            remainingTargetCapacity(candidate, targetCrowdLevel, reservedTargetLoad.getOrDefault(candidate.windowId(), 0))
+                    ))
+                    .filter(candidate -> candidate.remainingCapacity() > 0)
+                    .filter(candidate -> candidate.pressureScore() + 0.12 < sourcePressure)
+                    .max(Comparator.comparingDouble(candidate -> diversionTargetScore(source, candidate.candidate())));
             if (target.isEmpty()) {
                 continue;
             }
 
-            WindowDiversionCandidate selectedTarget = target.get();
-            int suggestedUserCount = suggestedUserCount(source, selectedTarget, targetCrowdLevel);
+            TargetCandidate selectedTarget = target.get();
+            int suggestedUserCount = suggestedUserCount(source, selectedTarget.candidate(), selectedTarget.remainingCapacity());
             if (suggestedUserCount <= 0) {
                 continue;
             }
 
-            double acceptanceRate = acceptanceRate(source, selectedTarget, profile, userType);
+            double acceptanceRate = acceptanceRate(source, selectedTarget.candidate(), profile, userType);
             int estimatedAcceptedCount = Math.min(
                     suggestedUserCount,
                     Math.max(1, (int) Math.round(suggestedUserCount * acceptanceRate))
             );
-            double tagSimilarity = roundTwo(windowTagSimilarity(source, selectedTarget) / 100.0);
+            double tagSimilarity = roundTwo(windowTagSimilarity(source, selectedTarget.candidate()) / 100.0);
             double estimatedWaitReduction = roundOne(
-                    estimatedWaitReduction(source, selectedTarget, estimatedAcceptedCount)
+                    estimatedWaitReduction(source, selectedTarget.candidate(), estimatedAcceptedCount)
             );
 
-            usedTargets.add(selectedTarget.windowId());
+            reservedTargetLoad.merge(selectedTarget.windowId(), estimatedAcceptedCount, Integer::sum);
             suggestions.add(new DiversionSuggestionItem(
                     source.restaurantId(),
                     source.windowId(),
@@ -189,7 +193,7 @@ public class RecommendationService {
                     estimatedAcceptedCount,
                     estimatedWaitReduction,
                     tagSimilarity,
-                    diversionReason(source, selectedTarget, acceptanceRate, estimatedWaitReduction, tagSimilarity)
+                    diversionReason(source, selectedTarget.candidate(), acceptanceRate, estimatedWaitReduction, tagSimilarity)
             ));
             if (suggestions.size() >= 10) {
                 break;
@@ -741,55 +745,64 @@ public class RecommendationService {
     }
 
     private List<WindowDiversionCandidate> findSourceWindows(SimulationTimePoint timePoint, String targetCrowdLevel) {
-        int targetWeight = crowdWeight(targetCrowdLevel);
-        int targetWaitThreshold = waitThresholdForLevel(targetCrowdLevel);
-        List<WindowDiversionCandidate> sources = new ArrayList<>();
-        for (RestaurantSnapshot restaurant : timePoint.restaurants()) {
-            for (WindowSnapshot window : restaurant.windows()) {
-                WindowParameter parameter = seedRepository.window(window.windowId());
-                boolean crowded = "BUSY".equals(window.crowdLevel()) || "EXTREME".equals(window.crowdLevel());
-                int minQueueForDiversion = parameter == null ? 3 : Math.max(3, (int) Math.ceil(parameter.serviceRatePerMinute() * 2));
-                if (parameter != null
-                        && crowded
-                        && crowdWeight(window.crowdLevel()) > targetWeight
-                        && window.waitMinutes() > targetWaitThreshold
-                        && window.queueLength() >= minQueueForDiversion
-                        && "OPEN".equals(window.status())
-                        && "OPEN".equals(parameter.status())) {
-                    sources.add(new WindowDiversionCandidate(restaurant, window, parameter));
-                }
-            }
+        List<WindowDiversionCandidate> candidates = findTargetWindows(timePoint, targetCrowdLevel);
+        if (candidates.isEmpty()) {
+            return List.of();
         }
-        return sources.stream()
-                .sorted(Comparator.comparingInt(WindowDiversionCandidate::waitMinutes).reversed()
+
+        double averagePressure = candidates.stream().mapToDouble(this::pressureScore).average().orElse(0.0);
+        double maxPressure = candidates.stream().mapToDouble(this::pressureScore).max().orElse(0.0);
+        double cutoff = Math.max(
+                averagePressure + sourcePressureMargin(targetCrowdLevel),
+                averagePressure + Math.max(0.18, (maxPressure - averagePressure) * 0.28)
+        );
+
+        List<WindowDiversionCandidate> sources = candidates.stream()
+                .filter(candidate -> candidate.queueLength() >= Math.max(2, (int) Math.ceil(candidate.serviceRatePerMinute())))
+                .filter(candidate -> pressureScore(candidate) >= cutoff)
+                .sorted(Comparator.comparingDouble(this::pressureScore).reversed()
+                        .thenComparingInt(WindowDiversionCandidate::waitMinutes).reversed()
                         .thenComparingInt(WindowDiversionCandidate::queueLength).reversed())
+                .limit(8)
+                .toList();
+        if (!sources.isEmpty()) {
+            return sources;
+        }
+
+        return candidates.stream()
+                .sorted(Comparator.comparingDouble(this::pressureScore).reversed()
+                        .thenComparingInt(WindowDiversionCandidate::waitMinutes).reversed())
+                .filter(candidate -> pressureScore(candidate) > averagePressure + 0.12)
+                .limit(3)
                 .toList();
     }
 
     private List<WindowDiversionCandidate> findTargetWindows(SimulationTimePoint timePoint, String targetCrowdLevel) {
-        int targetWeight = crowdWeight(targetCrowdLevel);
         List<WindowDiversionCandidate> targets = new ArrayList<>();
         for (RestaurantSnapshot restaurant : timePoint.restaurants()) {
             for (WindowSnapshot window : restaurant.windows()) {
                 WindowParameter parameter = seedRepository.window(window.windowId());
                 if (parameter != null
                         && "OPEN".equals(window.status())
-                        && "OPEN".equals(parameter.status())
-                        && crowdWeight(window.crowdLevel()) <= targetWeight) {
+                        && "OPEN".equals(parameter.status())) {
                     targets.add(new WindowDiversionCandidate(restaurant, window, parameter));
                 }
             }
         }
-        return targets;
+        return targets.stream()
+                .sorted(Comparator.comparingDouble(this::pressureScore)
+                        .thenComparing(Comparator.comparingDouble(WindowDiversionCandidate::serviceRatePerMinute).reversed()))
+                .toList();
     }
 
     private double diversionTargetScore(WindowDiversionCandidate source, WindowDiversionCandidate target) {
-        double waitGap = Math.max(0, source.waitMinutes() - target.waitMinutes()) * 4.0;
+        double pressureGap = Math.max(0.0, pressureScore(source) - pressureScore(target));
+        double waitGap = Math.max(0, source.waitMinutes() - target.waitMinutes()) * 1.8;
+        double queueGap = Math.max(0, source.queueLength() - target.queueLength()) * 0.9;
         double tagScore = windowTagSimilarity(source, target);
-        double crowdScore = 20.0 - crowdWeight(target.crowdLevel()) * 4.0;
-        double serviceScore = Math.min(20.0, target.serviceRatePerMinute() * 8.0);
-        double sameRestaurantBonus = source.restaurantId().equals(target.restaurantId()) ? 8.0 : 0.0;
-        return waitGap * 0.42 + tagScore * 0.28 + crowdScore * 0.15 + serviceScore * 0.10 + sameRestaurantBonus * 0.05;
+        double serviceScore = Math.min(22.0, target.serviceRatePerMinute() * 7.5);
+        double sameRestaurantBonus = source.restaurantId().equals(target.restaurantId()) ? 6.0 : 0.0;
+        return pressureGap * 24.0 + waitGap + queueGap + tagScore * 0.20 + serviceScore * 0.10 + sameRestaurantBonus;
     }
 
     private double windowTagSimilarity(WindowDiversionCandidate source, WindowDiversionCandidate target) {
@@ -803,32 +816,31 @@ public class RecommendationService {
     private int suggestedUserCount(
             WindowDiversionCandidate source,
             WindowDiversionCandidate target,
-            String targetCrowdLevel
+            int remainingTargetCapacity
     ) {
-        int sourceExcess = Math.max(0, source.queueLength() - maxQueueForLevel(source, targetCrowdLevel));
-        int targetRemaining = targetRemainingCapacity(target, targetCrowdLevel);
-        return Math.min(50, Math.min(sourceExcess, targetRemaining));
+        int queueGap = Math.max(0, source.queueLength() - target.queueLength());
+        int sourceExcess = Math.max(0, source.queueLength() - comfortableQueue(source));
+        int pressureDriven = Math.max(
+                1,
+                (int) Math.ceil(Math.max(0.0, pressureScore(source) - pressureScore(target)) * Math.max(1.0, target.serviceRatePerMinute()) * 1.2)
+        );
+        int imbalanceDriven = Math.max(1, (int) Math.ceil(queueGap * 0.35));
+        int desired = Math.max(sourceExcess, Math.max(pressureDriven, imbalanceDriven));
+        return Math.min(40, Math.min(Math.min(source.queueLength(), remainingTargetCapacity), desired));
     }
 
-    private int targetRemainingCapacity(WindowDiversionCandidate target, String targetCrowdLevel) {
-        return Math.max(0, maxQueueForLevel(target, targetCrowdLevel) - target.queueLength());
+    private int remainingTargetCapacity(WindowDiversionCandidate target, String targetCrowdLevel, int reservedLoad) {
+        return Math.max(0, maxQueueForLevel(target, targetCrowdLevel) - target.queueLength() - reservedLoad);
     }
 
     private int maxQueueForLevel(WindowDiversionCandidate candidate, String targetCrowdLevel) {
-        int maxWaitMinutes = waitThresholdForLevel(targetCrowdLevel);
-        if ("EXTREME".equals(targetCrowdLevel)) {
-            maxWaitMinutes = Math.max(20, candidate.waitMinutes());
-        }
-        return Math.max(0, (int) Math.floor(maxWaitMinutes * candidate.serviceRatePerMinute()));
-    }
-
-    private int waitThresholdForLevel(String crowdLevel) {
-        return switch (crowdLevel) {
-            case "IDLE" -> 4;
-            case "NORMAL" -> 9;
-            case "BUSY" -> 19;
-            default -> Integer.MAX_VALUE;
+        double comfortMinutes = switch (targetCrowdLevel) {
+            case "IDLE" -> 5.0;
+            case "NORMAL" -> 8.0;
+            case "BUSY" -> 11.0;
+            default -> 14.0;
         };
+        return Math.max(2, (int) Math.floor(comfortMinutes * Math.max(0.8, candidate.serviceRatePerMinute())));
     }
 
     private double acceptanceRate(
@@ -839,8 +851,10 @@ public class RecommendationService {
     ) {
         double tagSimilarity = windowTagSimilarity(source, target) / 100.0;
         double waitReduction = Math.max(0, source.waitMinutes() - target.waitMinutes());
+        double pressureGap = Math.max(0.0, pressureScore(source) - pressureScore(target));
         double rate = 0.12
                 + Math.min(0.30, waitReduction * 0.025)
+                + Math.min(0.14, pressureGap * 0.05)
                 + tagSimilarity * 0.22
                 + (source.restaurantId().equals(target.restaurantId()) ? 0.08 : -0.05);
 
@@ -858,6 +872,32 @@ public class RecommendationService {
         }
 
         return clamp(rate, 0.05, 0.95);
+    }
+
+    private double pressureScore(WindowDiversionCandidate candidate) {
+        double normalizedWait = candidate.waitMinutes() / 7.0;
+        double normalizedQueue = candidate.queueLength() / Math.max(1.0, candidate.serviceRatePerMinute() * 4.5);
+        double loadRatio = candidate.queueLength() / Math.max(1.0, candidate.serviceRatePerMinute() * 8.0);
+        double crowdComponent = switch (candidate.crowdLevel()) {
+            case "NORMAL" -> 0.45;
+            case "BUSY" -> 1.0;
+            case "EXTREME" -> 1.65;
+            default -> 0.0;
+        };
+        return normalizedWait * 0.92 + normalizedQueue * 0.78 + loadRatio * 0.28 + crowdComponent * 0.55;
+    }
+
+    private double sourcePressureMargin(String targetCrowdLevel) {
+        return switch (targetCrowdLevel) {
+            case "IDLE" -> 0.12;
+            case "NORMAL" -> 0.20;
+            case "BUSY" -> 0.30;
+            default -> 0.38;
+        };
+    }
+
+    private int comfortableQueue(WindowDiversionCandidate candidate) {
+        return Math.max(2, (int) Math.floor(Math.max(0.8, candidate.serviceRatePerMinute()) * 6.5));
     }
 
     private double budgetAcceptanceDelta(
@@ -1278,6 +1318,20 @@ public class RecommendationService {
 
         private double averagePrice() {
             return (priceMin + priceMax) / 2.0;
+        }
+    }
+
+    private record TargetCandidate(
+            WindowDiversionCandidate candidate,
+            double pressureScore,
+            int remainingCapacity
+    ) {
+        private Long restaurantId() {
+            return candidate.restaurantId();
+        }
+
+        private Long windowId() {
+            return candidate.windowId();
         }
     }
 }

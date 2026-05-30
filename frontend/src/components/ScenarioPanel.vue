@@ -50,8 +50,8 @@
         <el-form-item label="虚拟就餐人数">
           <el-slider
             :model-value="modelValue.virtualUserCount"
-            :min="100"
-            :max="2000"
+            :min="300"
+            :max="1800"
             :step="50"
             show-input
             @update:model-value="updateField('virtualUserCount', $event)"
@@ -170,10 +170,10 @@ const stepOptions = [5, 10, 15]
 const demandHint = computed(() => {
   const crowdLevel = props.modelValue.crowdLevel
   const dinerCount = Number(props.modelValue.virtualUserCount || 0)
-  if (crowdLevel === 'EXTREME' && dinerCount < 1000) {
+  if (crowdLevel === 'EXTREME' && dinerCount < 800) {
     return '当前设为极端拥挤，但虚拟就餐人数偏低，可能不容易形成明显排队压力。'
   }
-  if (crowdLevel === 'IDLE' && dinerCount > 900) {
+  if (crowdLevel === 'IDLE' && dinerCount > 700) {
     return '当前虚拟就餐人数较高，建议将拥挤等级调到正常或繁忙以保持场景一致。'
   }
   return '拥挤等级会影响到达集中程度，虚拟就餐人数决定本轮仿真的样本规模。'
