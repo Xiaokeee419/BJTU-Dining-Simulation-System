@@ -57,6 +57,29 @@ export function totalServingCount(point) {
   return flattenWindows(point).reduce((sum, entry) => sum + Number(entry.window.servingCount || 0), 0)
 }
 
+export function maxWindowQueueLength(point) {
+  return flattenWindows(point).reduce(
+    (max, entry) => Math.max(max, Number(entry.window.queueLength || 0)),
+    0,
+  )
+}
+
+export function topWindowQueueSum(point, limit = 5) {
+  return flattenWindows(point)
+    .map((entry) => Number(entry.window.queueLength || 0))
+    .sort((left, right) => right - left)
+    .slice(0, limit)
+    .reduce((sum, value) => sum + value, 0)
+}
+
+export function busyWindowCount(point) {
+  return flattenWindows(point).filter(({ window }) => window.crowdLevel === 'BUSY').length
+}
+
+export function extremeWindowCount(point) {
+  return flattenWindows(point).filter(({ window }) => window.crowdLevel === 'EXTREME').length
+}
+
 export function totalCapacity(point) {
   return (point?.restaurants || []).reduce(
     (sum, restaurant) => sum + Number(restaurant.capacity || 0),

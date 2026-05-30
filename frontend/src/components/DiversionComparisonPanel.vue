@@ -44,7 +44,7 @@
     <section v-if="hasTrend" class="chart-card trend-card">
       <div class="chart-head">
         <h3>趋势对比</h3>
-        <p>总排队人数与总负载人数随时间变化</p>
+        <p>最大窗口队列与头部窗口总排队人数随时间变化，更适合观察分流是否把局部压力打散</p>
       </div>
       <div ref="trendChartRef" class="chart-surface trend-surface"></div>
     </section>
@@ -61,7 +61,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import EmptyState from './EmptyState.vue'
-import { totalCurrentCount, totalQueueLength } from '../utils/simulationStats'
+import {
+  maxWindowQueueLength,
+  topWindowQueueSum,
+} from '../utils/simulationStats'
 
 const props = defineProps({
   comparison: {
@@ -352,35 +355,35 @@ function renderTrendChart() {
       data: trendSeries.labels,
       boundaryGap: false,
     },
-    yAxis: { type: 'value', name: '人数' },
+    yAxis: { type: 'value', name: '窗口压力指标' },
     series: [
       {
-        name: '未分流排队人数',
+        name: '未分流最大窗口队列',
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        data: trendSeries.baseQueue,
+        data: trendSeries.baseMaxQueue,
       },
       {
-        name: '分流后排队人数',
+        name: '分流后最大窗口队列',
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        data: trendSeries.compareQueue,
+        data: trendSeries.compareMaxQueue,
       },
       {
-        name: '未分流负载人数',
+        name: '未分流头部窗口总排队',
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        data: trendSeries.baseLoad,
+        data: trendSeries.baseTopQueue,
       },
       {
-        name: '分流后负载人数',
+        name: '分流后头部窗口总排队',
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        data: trendSeries.compareLoad,
+        data: trendSeries.compareTopQueue,
       },
     ],
   })
@@ -403,10 +406,22 @@ function buildTrendSeries(baseRun, compareRun) {
   const basePoints = Array.isArray(baseRun?.timePoints) ? baseRun.timePoints : []
   const comparePoints = Array.isArray(compareRun?.timePoints) ? compareRun.timePoints : []
   const baseIndex = new Map(
-    basePoints.map((point) => [point.minute, { queue: totalQueueLength(point), load: totalCurrentCount(point) }]),
+    basePoints.map((point) => [
+      point.minute,
+      {
+        maxQueue: maxWindowQueueLength(point),
+        topQueue: topWindowQueueSum(point),
+      },
+    ]),
   )
   const compareIndex = new Map(
-    comparePoints.map((point) => [point.minute, { queue: totalQueueLength(point), load: totalCurrentCount(point) }]),
+    comparePoints.map((point) => [
+      point.minute,
+      {
+        maxQueue: maxWindowQueueLength(point),
+        topQueue: topWindowQueueSum(point),
+      },
+    ]),
   )
 
   const labels = [...new Set([...baseIndex.keys(), ...compareIndex.keys()])]
@@ -414,10 +429,10 @@ function buildTrendSeries(baseRun, compareRun) {
 
   return {
     labels: labels.map((minute) => `${minute} 分钟`),
-    baseQueue: labels.map((minute) => baseIndex.get(minute)?.queue ?? 0),
-    compareQueue: labels.map((minute) => compareIndex.get(minute)?.queue ?? 0),
-    baseLoad: labels.map((minute) => baseIndex.get(minute)?.load ?? 0),
-    compareLoad: labels.map((minute) => compareIndex.get(minute)?.load ?? 0),
+    baseMaxQueue: labels.map((minute) => baseIndex.get(minute)?.maxQueue ?? 0),
+    compareMaxQueue: labels.map((minute) => compareIndex.get(minute)?.maxQueue ?? 0),
+    baseTopQueue: labels.map((minute) => baseIndex.get(minute)?.topQueue ?? 0),
+    compareTopQueue: labels.map((minute) => compareIndex.get(minute)?.topQueue ?? 0),
   }
 }
 

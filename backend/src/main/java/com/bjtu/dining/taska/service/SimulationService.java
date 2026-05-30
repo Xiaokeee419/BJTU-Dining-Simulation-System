@@ -38,13 +38,13 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class SimulationService {
-    private static final double WINDOW_SELECTION_TEMPERATURE = 6.6;
+    private static final double WINDOW_SELECTION_TEMPERATURE = 7.8;
     private static final double DISH_SELECTION_TEMPERATURE = 4.2;
     private static final Map<String, Double> CROWD_SPREAD_FACTOR = Map.of(
             "IDLE", 1.25,
             "NORMAL", 1.0,
-            "BUSY", 0.72,
-            "EXTREME", 0.52
+            "BUSY", 0.66,
+            "EXTREME", 0.44
     );
     private static final Map<String, Double> CROWD_COUNT_FACTOR = Map.of(
             "IDLE", 0.75,
@@ -421,9 +421,9 @@ public class SimulationService {
             double budgetMax = Math.max(budgetMin, profile.budgetMax() + randomInt(rng, -3, 4));
             int waitingToleranceMinutes = Math.max(1, profile.waitingToleranceMinutes() + randomInt(rng, -2, 3));
             double popularityBias = clamp(
-                    1.05 + rng.nextDouble() * 0.60 + ("HURRY".equals(profile.userType()) ? -0.06 : 0.12),
-                    0.85,
-                    1.80
+                    1.12 + rng.nextDouble() * 0.72 + ("HURRY".equals(profile.userType()) ? -0.08 : 0.15),
+                    0.90,
+                    2.05
             );
             double queueAversion = clamp(
                     0.88 + rng.nextDouble() * 0.45 + ("HURRY".equals(profile.userType()) ? 0.16 : 0.0),
@@ -431,9 +431,9 @@ public class SimulationService {
                     1.55
             );
             double diversionAcceptanceBias = clamp(
-                    0.86 + rng.nextDouble() * 0.36 + ("HURRY".equals(profile.userType()) ? 0.10 : 0.04),
-                    0.72,
-                    1.40
+                    0.94 + rng.nextDouble() * 0.42 + ("HURRY".equals(profile.userType()) ? 0.12 : 0.06),
+                    0.78,
+                    1.55
             );
             diners.add(new DinerProfile(
                     "D%05d".formatted(index + 1),
@@ -542,12 +542,12 @@ public class SimulationService {
             double estimatedWait = windowWaitMinutes(window, queueLengths.get(window.windowId()));
             double tagScore = tagOverlapScore(diner.preferenceTags(), window.matchingTags());
             double budgetScore = budgetOverlapScore(diner.budgetMin(), diner.budgetMax(), window.priceMin(), window.priceMax());
-            double budgetWeight = "BUDGET_SENSITIVE".equals(diner.userType()) ? 0.22 : 0.12;
-            double popularityScore = Math.pow(window.popularity(), 0.85) * 0.34 * diner.popularityBias();
-            double attractionScore = restaurant.baseAttraction() * 0.22;
+            double budgetWeight = "BUDGET_SENSITIVE".equals(diner.userType()) ? 0.18 : 0.08;
+            double popularityScore = Math.pow(window.popularity(), 0.80) * 0.42 * diner.popularityBias();
+            double attractionScore = restaurant.baseAttraction() * 0.24;
             double waitPenalty = delayedWaitPenalty(diner, estimatedWait);
             double score = attractionScore
-                    + tagScore * 0.24
+                    + tagScore * 0.20
                     + budgetScore * budgetWeight
                     + popularityScore
                     - waitPenalty
@@ -616,23 +616,24 @@ public class SimulationService {
             }
             double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
             double targetPressure = queuePressureScore(targetWindow, targetQueueLength, targetWait);
-            if (targetPressure >= sourcePressure - 0.12 || targetWait > sourceWait + 2.0) {
+            if (targetPressure >= sourcePressure - 0.04 || targetWait > sourceWait + 1.5) {
                 continue;
             }
             double pressureGap = Math.max(0.0, sourcePressure - targetPressure);
             double effectiveAcceptanceRate = clamp(
-                    candidate.acceptanceRate() * diner.diversionAcceptanceBias()
-                            + Math.min(0.18, Math.max(0.0, sourceWait - targetWait) * 0.016)
-                            + Math.min(0.10, pressureGap * 0.035),
-                    0.05,
-                    0.98
+                    candidate.acceptanceRate() * diner.diversionAcceptanceBias() * 1.12
+                            + Math.min(0.22, Math.max(0.0, sourceWait - targetWait) * 0.022)
+                            + Math.min(0.16, pressureGap * 0.050)
+                            + 0.04,
+                    0.10,
+                    0.995
             );
             if (diner.diversionAcceptanceSample() > effectiveAcceptanceRate) {
                 continue;
             }
-            double opportunityScore = pressureGap * 0.55
-                    + Math.max(0.0, sourceWait - targetWait) * 0.30
-                    + effectiveAcceptanceRate * 0.15;
+            double opportunityScore = pressureGap * 0.52
+                    + Math.max(0.0, sourceWait - targetWait) * 0.26
+                    + effectiveAcceptanceRate * 0.22;
             if (opportunityScore > bestOpportunity) {
                 bestOpportunity = opportunityScore;
                 redirectedChoice = new WindowChoice(targetWindow, targetWait);
@@ -719,12 +720,15 @@ public class SimulationService {
             }
 
             int targetCapacity = Math.max(0, maxReasonableTargetQueue(targetWindow) - targetQueueLength);
-            int balanceDrivenCount = Math.max(1, (int) Math.ceil(Math.max(0.0, sourceQueueLength - targetQueueLength) * 0.35));
+            int balanceDrivenCount = Math.max(1, (int) Math.ceil(Math.max(0.0, sourceQueueLength - targetQueueLength) * 0.48));
             int pressureDrivenCount = Math.max(
                     1,
-                    (int) Math.ceil(Math.max(0.0, sourcePressure - targetPressure) * Math.max(1.0, targetWindow.serviceRatePerMinute()) * 1.8)
+                    (int) Math.ceil(Math.max(0.0, sourcePressure - targetPressure) * Math.max(1.0, targetWindow.serviceRatePerMinute()) * 2.6)
             );
-            int desiredTransfer = Math.max(balanceDrivenCount, pressureDrivenCount);
+            int desiredTransfer = Math.max(
+                    Math.max(balanceDrivenCount, pressureDrivenCount),
+                    (int) Math.ceil(suggestion.estimatedAcceptedCount() * 1.20)
+            );
             int movedCount = Math.min(
                     sourceQueueLength,
                     Math.min(suggestion.estimatedAcceptedCount(), Math.min(targetCapacity, desiredTransfer))
@@ -828,18 +832,18 @@ public class SimulationService {
         double effectiveTolerance = Math.max(1.0, diner.waitingToleranceMinutes() / Math.max(0.65, diner.queueAversion()));
         double waitRatio = estimatedWait / effectiveTolerance;
         double basePenalty;
-        if (waitRatio <= 0.65) {
-            basePenalty = waitRatio * 0.05;
+        if (waitRatio <= 0.75) {
+            basePenalty = waitRatio * 0.03;
         } else if (waitRatio <= 1.0) {
-            basePenalty = 0.0325 + (waitRatio - 0.65) * 0.22;
+            basePenalty = 0.0225 + (waitRatio - 0.75) * 0.18;
         } else {
             double overflow = waitRatio - 1.0;
-            basePenalty = 0.1095 + Math.pow(overflow, 1.55) * 0.40;
+            basePenalty = 0.0675 + Math.pow(overflow, 1.48) * 0.34;
         }
         double userTypeWeight = switch (diner.userType()) {
-            case "HURRY" -> 1.28;
-            case "BUDGET_SENSITIVE" -> 0.92;
-            default -> 1.0;
+            case "HURRY" -> 1.20;
+            case "BUDGET_SENSITIVE" -> 0.88;
+            default -> 0.95;
         };
         return basePenalty * userTypeWeight;
     }

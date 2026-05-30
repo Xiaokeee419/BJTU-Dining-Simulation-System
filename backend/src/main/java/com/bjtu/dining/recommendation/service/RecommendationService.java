@@ -874,11 +874,11 @@ public class RecommendationService {
         int sourceExcess = Math.max(0, source.queueLength() - comfortableQueue(source));
         int pressureDriven = Math.max(
                 1,
-                (int) Math.ceil(Math.max(0.0, pressureScore(source) - pressureScore(target)) * Math.max(1.0, target.serviceRatePerMinute()) * 1.2)
+                (int) Math.ceil(Math.max(0.0, pressureScore(source) - pressureScore(target)) * Math.max(1.0, target.serviceRatePerMinute()) * 1.9)
         );
-        int imbalanceDriven = Math.max(1, (int) Math.ceil(queueGap * 0.35));
+        int imbalanceDriven = Math.max(1, (int) Math.ceil(queueGap * 0.50));
         int desired = Math.max(sourceExcess, Math.max(pressureDriven, imbalanceDriven));
-        return Math.min(40, Math.min(Math.min(source.queueLength(), remainingTargetCapacity), desired));
+        return Math.min(60, Math.min(Math.min(source.queueLength(), remainingTargetCapacity), desired));
     }
 
     private int remainingTargetCapacity(
@@ -936,26 +936,26 @@ public class RecommendationService {
         double tagSimilarity = windowTagSimilarity(source, target) / 100.0;
         double waitReduction = Math.max(0, source.waitMinutes() - target.waitMinutes());
         double pressureGap = Math.max(0.0, pressureScore(source) - pressureScore(target));
-        double rate = 0.12
-                + Math.min(0.30, waitReduction * 0.025)
-                + Math.min(0.14, pressureGap * 0.05)
-                + tagSimilarity * 0.22
-                + (source.restaurantId().equals(target.restaurantId()) ? 0.08 : -0.05);
+        double rate = 0.20
+                + Math.min(0.36, waitReduction * 0.032)
+                + Math.min(0.18, pressureGap * 0.065)
+                + tagSimilarity * 0.24
+                + (source.restaurantId().equals(target.restaurantId()) ? 0.10 : -0.03);
 
         rate += switch (userType) {
-            case "HURRY" -> 0.14;
-            case "BUDGET_SENSITIVE" -> 0.03;
-            case "FACULTY" -> 0.05;
+            case "HURRY" -> 0.18;
+            case "BUDGET_SENSITIVE" -> 0.05;
+            case "FACULTY" -> 0.06;
             case "VISITOR" -> -0.02;
-            default -> 0.06;
+            default -> 0.08;
         };
 
         if (profile != null) {
             rate += budgetAcceptanceDelta(source, target, profile, userType);
-            rate += target.waitMinutes() <= profile.waitingToleranceMinutes() ? 0.04 : -0.04;
+            rate += target.waitMinutes() <= profile.waitingToleranceMinutes() ? 0.06 : -0.02;
         }
 
-        return clamp(rate, 0.05, 0.95);
+        return clamp(rate, 0.12, 0.98);
     }
 
     private double pressureScore(WindowDiversionCandidate candidate) {
