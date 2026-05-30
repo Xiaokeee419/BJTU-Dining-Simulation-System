@@ -2,7 +2,7 @@ package com.bjtu.dining.recommendation.model;
 
 public record EvaluationMetrics(
         double avgWaitMinutes,
-        int maxWaitMinutes,
+        double maxWaitMinutes,
         int maxQueueLength,
         int busyWindowCount,
         int extremeWindowCount,

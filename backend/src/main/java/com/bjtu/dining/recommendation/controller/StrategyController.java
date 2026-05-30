@@ -1,6 +1,8 @@
 package com.bjtu.dining.recommendation.controller;
 
 import com.bjtu.dining.common.ApiResponse;
+import com.bjtu.dining.recommendation.dto.DiversionComparisonRequest;
+import com.bjtu.dining.recommendation.dto.DiversionComparisonResult;
 import com.bjtu.dining.recommendation.dto.StrategyCompareRequest;
 import com.bjtu.dining.recommendation.dto.StrategyComparisonResult;
 import com.bjtu.dining.recommendation.service.RecommendationService;
@@ -23,5 +25,12 @@ public class StrategyController {
     @PostMapping("/compare")
     public ApiResponse<StrategyComparisonResult> compare(@Valid @RequestBody StrategyCompareRequest request) {
         return ApiResponse.ok(recommendationService.compareStrategies(request));
+    }
+
+    @PostMapping("/diversion-comparison")
+    public ApiResponse<DiversionComparisonResult> diversionComparison(
+            @Valid @RequestBody DiversionComparisonRequest request
+    ) {
+        return ApiResponse.ok(recommendationService.runDiversionComparison(request));
     }
 }

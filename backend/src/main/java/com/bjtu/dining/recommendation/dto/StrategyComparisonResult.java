@@ -5,7 +5,7 @@ public record StrategyComparisonResult(
         Long compareRunId,
         String compareType,
         double avgWaitDelta,
-        int maxWaitDelta,
+        double maxWaitDelta,
         int maxQueueDelta,
         int busyWindowCountDelta,
         int extremeWindowCountDelta,

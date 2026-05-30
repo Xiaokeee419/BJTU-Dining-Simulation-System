@@ -3,7 +3,7 @@
     <PageHeader
       eyebrow="统计分析"
       title="仿真统计分析"
-      description="基于仿真结果的多维度统计分析，全面评估食堂运营表现与资源利用效率。"
+      description="本页只展示当前 run 的 metrics、timePoints 以及基于它们计算出的派生统计，不再展示没有数据来源的同比或历史口径。"
     />
 
     <section class="panel">
@@ -16,34 +16,26 @@
             :value="scenario.scenarioId"
           />
         </el-select>
-        <el-date-picker
-          v-model="dateRange"
-          type="daterange"
-          unlink-panels
-          range-separator="至"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-        />
         <el-select v-model="timeGrain">
           <el-option label="5 分钟" :value="5" />
           <el-option label="10 分钟" :value="10" />
           <el-option label="15 分钟" :value="15" />
         </el-select>
-        <el-button @click="resetFilters">重置</el-button>
+        <el-button @click="resetFilters">重置粒度</el-button>
       </div>
     </section>
 
     <EmptyState
       v-if="!snapshot"
       title="请先运行仿真"
-      description="当前没有可用于统计分析的仿真结果。完成仿真后，这里会展示排队、窗口效率和时段分析。"
+      description="当前没有可用于统计分析的仿真结果。运行仿真后，这里会展示队列、容量负载和窗口负载统计。"
     />
 
     <template v-else>
       <section class="card-grid-4 stats-row">
         <StatCard
           v-for="item in statCards"
-          :key="item.label"
+          :key="item.key"
           :icon="item.icon"
           :label="item.label"
           :value="item.value"
@@ -57,12 +49,12 @@
 
       <section class="section-grid">
         <div class="queue-zone">
-          <ChartCard title="排队人数变化趋势" subtitle="展示统计口径下的排队人数变化。">
+          <ChartCard title="排队人数趋势" subtitle="按 timePoints 统计总排队人数。">
             <div ref="queueTrendRef" class="chart-surface"></div>
           </ChartCard>
         </div>
         <div class="window-zone">
-          <ChartCard title="各窗口服务效率对比" subtitle="展示各窗口平均服务效率与服务中人数。">
+          <ChartCard title="窗口服务负载比" subtitle="由 serving / (serving + queue) 近似计算，不表示后端直接返回的服务效率。">
             <div ref="windowTrendRef" class="chart-surface"></div>
           </ChartCard>
         </div>
@@ -70,7 +62,7 @@
           <div class="panel-header">
             <div>
               <h2 class="panel-title">仿真概要</h2>
-              <p class="panel-subtitle">基于当前结果汇总的仿真摘要。</p>
+              <p class="panel-subtitle">按当前 run 汇总的基础信息。</p>
             </div>
           </div>
           <div class="panel-body summary-list">
@@ -87,12 +79,12 @@
               <strong>{{ snapshot.summary.maxQueueLength }} 人</strong>
             </div>
             <div>
-              <span>座位总数</span>
-              <strong>{{ snapshot.summary.seatTotal }} 个</strong>
+              <span>总容量</span>
+              <strong>{{ snapshot.summary.seatTotal }}</strong>
             </div>
             <div>
               <span>窗口总数</span>
-              <strong>{{ snapshot.summary.windowTotal }} 个</strong>
+              <strong>{{ snapshot.summary.windowTotal }}</strong>
             </div>
             <div>
               <span>仿真时长</span>
@@ -108,12 +100,12 @@
 
       <section class="section-grid">
         <div class="seat-zone">
-          <ChartCard title="座位利用率趋势" subtitle="展示总座位利用率随时间变化。">
+          <ChartCard title="容量负载率趋势" subtitle="按餐厅 currentCount / capacity 计算的高峰负载率。">
             <div ref="seatTrendRef" class="chart-surface"></div>
           </ChartCard>
         </div>
         <div class="period-zone">
-          <ChartCard title="时段对比分析" subtitle="按时间分段比较平均等待、座位利用率与拥堵指数。">
+          <ChartCard title="分段对比分析" subtitle="按时间片对比平均等待、容量负载率和拥挤指数。">
             <div ref="periodTrendRef" class="chart-surface"></div>
           </ChartCard>
         </div>
@@ -139,7 +131,6 @@ const store = useSimulationStore()
 const { currentRun, selectedScenarioId, scenarios, profiles } = storeToRefs(store)
 
 const timeGrain = ref(5)
-const dateRange = ref([])
 const queueTrendRef = ref(null)
 const windowTrendRef = ref(null)
 const seatTrendRef = ref(null)
@@ -154,17 +145,55 @@ const displayRun = computed(() => aggregateRun(currentRun.value, timeGrain.value
 const snapshot = computed(() => buildStatisticsSnapshot(displayRun.value))
 const statCards = computed(() => {
   if (!snapshot.value) return []
+
   const cardMap = {
-    avgWait: { icon: Clock, delta: '-1.2 分钟', deltaState: 'negative', caption: '较昨日', tone: 'teal' },
-    seatUtilization: { icon: OfficeBuilding, delta: '+4.7%', deltaState: 'positive', caption: '较昨日', tone: 'primary' },
-    windowEfficiency: { icon: DataAnalysis, delta: '+2.3', deltaState: 'positive', caption: '较昨日', tone: 'cyan' },
-    totalDiners: { icon: UserFilled, delta: '+8.6%', deltaState: 'positive', caption: '较昨日', tone: 'primary' },
-    congestion: { icon: Grid, delta: '-0.08', deltaState: 'negative', caption: '较昨日', tone: 'teal' },
+    avgWait: {
+      icon: Clock,
+      label: '平均排队时长',
+      caption: 'metrics.avgWaitMinutes 优先',
+      deltaState: 'neutral',
+      tone: 'teal',
+    },
+    seatUtilization: {
+      icon: OfficeBuilding,
+      label: '容量负载率',
+      caption: 'currentCount / capacity',
+      deltaState: 'neutral',
+      tone: 'orange',
+    },
+    windowEfficiency: {
+      icon: DataAnalysis,
+      label: '窗口服务负载比',
+      caption: '服务中 / (服务中 + 排队)',
+      deltaState: 'neutral',
+      tone: 'cyan',
+    },
+    totalDiners: {
+      icon: UserFilled,
+      label: '仿真样本人数',
+      caption: 'metrics.totalVirtualUsers 优先',
+      deltaState: 'neutral',
+      tone: 'primary',
+    },
+    congestion: {
+      icon: Grid,
+      label: '拥挤指数',
+      caption: '基于 timePoints 派生',
+      deltaState: 'neutral',
+      tone: 'teal',
+    },
   }
 
   return snapshot.value.cards.map((item) => ({
-    ...item,
-    ...cardMap[item.key],
+    key: item.key,
+    icon: cardMap[item.key].icon,
+    label: cardMap[item.key].label,
+    value: item.value,
+    unit: item.unit,
+    caption: cardMap[item.key].caption,
+    delta: item.note,
+    deltaState: cardMap[item.key].deltaState,
+    tone: cardMap[item.key].tone,
   }))
 })
 
@@ -174,7 +203,6 @@ onMounted(async () => {
     if (!currentRun.value && profiles.value.length && scenarios.value.length) {
       await store.runCurrentSimulation()
     }
-    syncDateRange()
     renderCharts()
     window.addEventListener('resize', resizeCharts)
   } catch (error) {
@@ -196,23 +224,8 @@ watch(
   { deep: true },
 )
 
-watch(
-  () => currentRun.value?.createdAt,
-  () => syncDateRange(),
-)
-
 function resetFilters() {
   timeGrain.value = 5
-  syncDateRange()
-}
-
-function syncDateRange() {
-  if (!currentRun.value?.createdAt) {
-    dateRange.value = []
-    return
-  }
-  const date = new Date(currentRun.value.createdAt)
-  dateRange.value = [date, date]
 }
 
 function renderCharts() {
@@ -267,12 +280,12 @@ function renderWindowChart() {
       axisLabel: { interval: 0, rotate: 16 },
     },
     yAxis: [
-      { type: 'value', name: '效率', max: 100 },
+      { type: 'value', name: '负载比', max: 100 },
       { type: 'value', name: '服务中' },
     ],
     series: [
       {
-        name: '服务效率',
+        name: '窗口服务负载比',
         type: 'bar',
         barMaxWidth: 28,
         data: rows.map((item) => item.efficiency),
@@ -294,10 +307,10 @@ function renderSeatChart() {
     tooltip: { trigger: 'axis' },
     grid: { left: 42, right: 20, top: 26, bottom: 32 },
     xAxis: { type: 'category', data: snapshot.value.series.labels, boundaryGap: false },
-    yAxis: { type: 'value', name: '利用率', max: 100 },
+    yAxis: { type: 'value', name: '负载率', max: 100 },
     series: [
       {
-        name: '座位利用率',
+        name: '容量负载率',
         type: 'line',
         smooth: true,
         areaStyle: { color: 'rgb(20 184 166 / 12%)' },
@@ -318,8 +331,8 @@ function renderPeriodChart() {
       data: snapshot.value.series.periodComparison.map((item) => item.label),
     },
     yAxis: [
-      { type: 'value', name: '等待/利用率' },
-      { type: 'value', name: '拥堵指数', max: 100 },
+      { type: 'value', name: '等待 / 负载率' },
+      { type: 'value', name: '拥挤指数', max: 100 },
     ],
     series: [
       {
@@ -328,12 +341,12 @@ function renderPeriodChart() {
         data: snapshot.value.series.periodComparison.map((item) => item.avgWait),
       },
       {
-        name: '座位利用率',
+        name: '容量负载率',
         type: 'bar',
         data: snapshot.value.series.periodComparison.map((item) => item.seatUtilization),
       },
       {
-        name: '拥堵指数',
+        name: '拥挤指数',
         type: 'line',
         yAxisIndex: 1,
         smooth: true,
@@ -387,7 +400,7 @@ function formatDate(value) {
 <style scoped>
 .filter-grid {
   display: grid;
-  grid-template-columns: 1.2fr 1.5fr 0.8fr auto;
+  grid-template-columns: 1.2fr 0.8fr auto;
   gap: 14px;
 }
 

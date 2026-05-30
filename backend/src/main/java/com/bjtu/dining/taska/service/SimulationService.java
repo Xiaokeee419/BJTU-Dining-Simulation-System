@@ -2,6 +2,7 @@ package com.bjtu.dining.taska.service;
 
 import com.bjtu.dining.common.BadRequestException;
 import com.bjtu.dining.common.ResourceNotFoundException;
+import com.bjtu.dining.taska.model.TaskADtos.DiversionSuggestion;
 import com.bjtu.dining.taska.model.TaskADtos.EvaluationMetrics;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
 import com.bjtu.dining.taska.model.TaskADtos.QueueState;
@@ -9,6 +10,7 @@ import com.bjtu.dining.taska.model.TaskADtos.RestaurantTimePoint;
 import com.bjtu.dining.taska.model.TaskADtos.ScenarioPreset;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunRequest;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunResult;
+import com.bjtu.dining.taska.model.TaskADtos.SimulationRunWithDiversionRequest;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationScenario;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationTimePoint;
 import com.bjtu.dining.taska.model.TaskADtos.TimelineResponse;
@@ -24,7 +26,6 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -85,7 +86,7 @@ public class SimulationService {
     public List<ScenarioPreset> scenarioPresets() {
         return List.of(
                 new ScenarioPreset("weekday-lunch-peak", "工作日午餐高峰", "LUNCH", "WEEKDAY", "BUSY", 1.0, 1.2, List.of(), 800, 60, 5, 20260425),
-                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐普通", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 600, 60, 5, 20260426),
+                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐常态", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 600, 60, 5, 20260426),
                 new ScenarioPreset("rainy-lunch-extreme", "雨天午餐极端拥挤", "LUNCH", "WEEKDAY", "EXTREME", 1.25, 1.25, List.of(), 1200, 60, 5, 20260427)
         );
     }
@@ -94,7 +95,59 @@ public class SimulationService {
         UserProfile profile = normalizeProfile(request == null ? null : request.profile());
         SimulationScenario scenario = normalizeScenario(request == null ? null : request.scenario());
         validate(profile, scenario);
+        return simulateRun(profile, scenario, null, null);
+    }
 
+    public SimulationRunResult runSimulationWithDiversion(SimulationRunWithDiversionRequest request) {
+        if (request == null || request.baseRunId() == null || request.baseRunId() <= 0) {
+            throw new BadRequestException("baseRunId", "baseRunId is required");
+        }
+        if (request.diversionSuggestions() == null || request.diversionSuggestions().isEmpty()) {
+            throw new BadRequestException("diversionSuggestions", "diversionSuggestions must not be empty");
+        }
+
+        SimulationRunResult baseRun = getRunResult(request.baseRunId());
+        if (!"FINISHED".equals(baseRun.status())) {
+            throw new BadRequestException("baseRunId", "baseRun must be FINISHED");
+        }
+
+        UserProfile profile = normalizeProfile(baseRun.profile());
+        SimulationScenario scenario = normalizeScenario(baseRun.scenario());
+        validate(profile, scenario);
+
+        int diversionStartMinute = resolveDiversionStartMinute(baseRun, scenario, request.minute());
+        DiversionPlan diversionPlan = buildDiversionPlan(
+                diversionStartMinute,
+                request.diversionSuggestions(),
+                seedDataService.seedData()
+        );
+        return simulateRun(profile, scenario, diversionPlan, baseRun.runId());
+    }
+
+    public SimulationRunResult getRunResult(long runId) {
+        SimulationRunResult result = runStore.get(runId);
+        if (result == null) {
+            throw new ResourceNotFoundException("simulation run not found");
+        }
+        return result;
+    }
+
+    public TimelineResponse timeline(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        return new TimelineResponse(runId, result.timePoints());
+    }
+
+    public MetricsResponse metrics(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        return new MetricsResponse(runId, result.metrics());
+    }
+
+    private SimulationRunResult simulateRun(
+            UserProfile profile,
+            SimulationScenario scenario,
+            DiversionPlan diversionPlan,
+            Long compareSourceRunId
+    ) {
         SeedData seedData = seedDataService.seedData();
         Random rng = new Random(scenario.randomSeed());
         Set<Long> closedWindowIds = new LinkedHashSet<>(scenario.closedWindowIds());
@@ -114,24 +167,53 @@ public class SimulationService {
         int maxExtremeWindowCount = 0;
         int nextDinerIndex = 0;
         int previousMinute = 0;
+        boolean diversionApplied = diversionPlan == null || !diversionPlan.hasSuggestions();
 
         for (int minute = 0; minute <= scenario.durationMinutes(); minute += scenario.stepMinutes()) {
             int elapsed = minute > 0 ? minute - previousMinute : 0;
-
             if (elapsed > 0) {
                 serveQueues(seedData, scenario, closedWindowIds, queueLengths, serviceCarry, elapsed);
             }
 
+            if (!diversionApplied && minute >= diversionPlan.startMinute()) {
+                applyDiversionToExistingQueues(
+                        seedData,
+                        scenario,
+                        diversionPlan,
+                        closedWindowIds,
+                        queueLengths
+                );
+                diversionApplied = true;
+            }
+
             while (nextDinerIndex < diners.size() && diners.get(nextDinerIndex).arrivalMinute <= minute) {
                 Diner diner = diners.get(nextDinerIndex);
-                WindowChoice choice = chooseWindow(diner, seedData, queueLengths, closedWindowIds, scenario.mealPeriod(), rng);
-                DishSeed dish = chooseDish(diner, choice.window(), seedData.dishesByWindow(), rng);
-                queueLengths.compute(choice.window().windowId(), (ignored, value) -> value == null ? 1 : value + 1);
-                diner.targetRestaurantId = choice.window().restaurantId();
-                diner.targetWindowId = choice.window().windowId();
+                WindowChoice originalChoice = chooseWindow(
+                        diner,
+                        seedData,
+                        queueLengths,
+                        closedWindowIds,
+                        scenario.mealPeriod(),
+                        rng
+                );
+                WindowChoice finalChoice = maybeRedirectWindow(
+                        originalChoice,
+                        diversionPlan,
+                        minute,
+                        seedData,
+                        queueLengths,
+                        closedWindowIds,
+                        scenario.mealPeriod(),
+                        rng
+                );
+                DishSeed dish = chooseDish(diner, finalChoice.window(), seedData.dishesByWindow(), rng);
+                queueLengths.compute(finalChoice.window().windowId(), (ignored, value) -> value == null ? 1 : value + 1);
+
+                diner.targetRestaurantId = finalChoice.window().restaurantId();
+                diner.targetWindowId = finalChoice.window().windowId();
                 diner.targetDishId = dish == null ? null : dish.dishId();
-                diner.expectedWaitMinutes = round(choice.estimatedWait());
-                selectedWaits.add(choice.estimatedWait());
+                diner.expectedWaitMinutes = round(finalChoice.estimatedWait());
+                selectedWaits.add(finalChoice.estimatedWait());
                 nextDinerIndex++;
             }
 
@@ -167,28 +249,13 @@ public class SimulationService {
                 scenario,
                 timePoints,
                 metrics,
-                now()
+                now(),
+                diversionPlan != null && diversionPlan.hasSuggestions(),
+                compareSourceRunId,
+                diversionPlan == null ? null : diversionPlan.startMinute()
         );
         runStore.put(runId, result);
         return result;
-    }
-
-    public SimulationRunResult getRunResult(long runId) {
-        SimulationRunResult result = runStore.get(runId);
-        if (result == null) {
-            throw new ResourceNotFoundException("仿真运行不存在");
-        }
-        return result;
-    }
-
-    public TimelineResponse timeline(long runId) {
-        SimulationRunResult result = getRunResult(runId);
-        return new TimelineResponse(runId, result.timePoints());
-    }
-
-    public MetricsResponse metrics(long runId) {
-        SimulationRunResult result = getRunResult(runId);
-        return new MetricsResponse(runId, result.metrics());
     }
 
     private UserProfile normalizeProfile(UserProfile profile) {
@@ -224,38 +291,105 @@ public class SimulationService {
 
     private void validate(UserProfile profile, SimulationScenario scenario) {
         if (!Set.of("STUDENT", "HURRY", "BUDGET_SENSITIVE").contains(profile.userType())) {
-            throw new BadRequestException("profile.userType", "用户类型必须是 STUDENT、HURRY 或 BUDGET_SENSITIVE");
+            throw new BadRequestException("profile.userType", "userType must be STUDENT, HURRY or BUDGET_SENSITIVE");
         }
         if (profile.budgetMin() < 0 || profile.budgetMax() < profile.budgetMin()) {
-            throw new BadRequestException("profile.budgetMax", "预算范围不合法");
+            throw new BadRequestException("profile.budgetMax", "budget range is invalid");
         }
         if (profile.waitingToleranceMinutes() < 1) {
-            throw new BadRequestException("profile.waitingToleranceMinutes", "等待容忍时间必须大于 0");
+            throw new BadRequestException("profile.waitingToleranceMinutes", "waitingToleranceMinutes must be greater than 0");
         }
         if (!Set.of("BREAKFAST", "LUNCH", "DINNER").contains(scenario.mealPeriod())) {
-            throw new BadRequestException("scenario.mealPeriod", "餐别必须是 BREAKFAST、LUNCH 或 DINNER");
+            throw new BadRequestException("scenario.mealPeriod", "mealPeriod must be BREAKFAST, LUNCH or DINNER");
         }
         if (!Set.of("WEEKDAY", "WEEKEND").contains(scenario.dayType())) {
-            throw new BadRequestException("scenario.dayType", "日期类型必须是 WEEKDAY 或 WEEKEND");
+            throw new BadRequestException("scenario.dayType", "dayType must be WEEKDAY or WEEKEND");
         }
         if (!CROWD_SPREAD_FACTOR.containsKey(scenario.crowdLevel())) {
-            throw new BadRequestException("scenario.crowdLevel", "拥挤等级必须是 IDLE、NORMAL、BUSY 或 EXTREME");
+            throw new BadRequestException("scenario.crowdLevel", "crowdLevel must be IDLE, NORMAL, BUSY or EXTREME");
         }
         if (scenario.virtualUserCount() < 1 || scenario.virtualUserCount() > 5000) {
-            throw new BadRequestException("scenario.virtualUserCount", "仿真人数必须在 1 到 5000 之间");
+            throw new BadRequestException("scenario.virtualUserCount", "virtualUserCount must be between 1 and 5000");
         }
         if (scenario.durationMinutes() < 5 || scenario.durationMinutes() > 180) {
-            throw new BadRequestException("scenario.durationMinutes", "仿真时长必须在 5 到 180 分钟之间");
+            throw new BadRequestException("scenario.durationMinutes", "durationMinutes must be between 5 and 180");
         }
         if (scenario.stepMinutes() < 1 || scenario.stepMinutes() > 30) {
-            throw new BadRequestException("scenario.stepMinutes", "时间步长必须在 1 到 30 分钟之间");
+            throw new BadRequestException("scenario.stepMinutes", "stepMinutes must be between 1 and 30");
         }
         if (scenario.durationMinutes() % scenario.stepMinutes() != 0) {
-            throw new BadRequestException("scenario.stepMinutes", "仿真时长必须能被时间步长整除");
+            throw new BadRequestException("scenario.stepMinutes", "durationMinutes must be divisible by stepMinutes");
         }
         if (scenario.weatherFactor() <= 0 || scenario.eventFactor() <= 0) {
-            throw new BadRequestException("scenario.weatherFactor", "天气和活动影响系数必须大于 0");
+            throw new BadRequestException("scenario.weatherFactor", "weatherFactor and eventFactor must be positive");
         }
+    }
+
+    private int resolveDiversionStartMinute(
+            SimulationRunResult baseRun,
+            SimulationScenario scenario,
+            Integer requestedMinute
+    ) {
+        int resolved = requestedMinute == null ? resolvePeakMinute(baseRun) : requestedMinute;
+        if (resolved < 0 || resolved > scenario.durationMinutes()) {
+            throw new BadRequestException("minute", "minute is out of simulation range");
+        }
+        if (resolved % scenario.stepMinutes() != 0) {
+            throw new BadRequestException("minute", "minute must align with stepMinutes");
+        }
+        return resolved;
+    }
+
+    private DiversionPlan buildDiversionPlan(
+            int diversionStartMinute,
+            List<DiversionSuggestion> suggestions,
+            SeedData seedData
+    ) {
+        List<ResolvedDiversionSuggestion> resolvedSuggestions = new ArrayList<>();
+        Map<Long, List<ResolvedDiversionSuggestion>> suggestionsBySourceWindow = new LinkedHashMap<>();
+        for (DiversionSuggestion suggestion : suggestions) {
+            if (suggestion == null) {
+                continue;
+            }
+            if (suggestion.fromWindowId() == suggestion.toWindowId()) {
+                continue;
+            }
+            WindowSeed fromWindow = seedData.windowsById().get(suggestion.fromWindowId());
+            WindowSeed toWindow = seedData.windowsById().get(suggestion.toWindowId());
+            if (fromWindow == null || toWindow == null) {
+                throw new BadRequestException("diversionSuggestions", "diversionSuggestions contains unknown windowId");
+            }
+
+            int acceptedCount = resolvedAcceptedCount(suggestion);
+            if (acceptedCount <= 0) {
+                continue;
+            }
+
+            ResolvedDiversionSuggestion resolved = new ResolvedDiversionSuggestion(
+                    suggestion.fromRestaurantId(),
+                    suggestion.fromWindowId(),
+                    suggestion.toRestaurantId(),
+                    suggestion.toWindowId(),
+                    suggestion.suggestedUserCount() == null ? acceptedCount : suggestion.suggestedUserCount(),
+                    clamp(suggestion.acceptanceRate() == null ? 0.5 : suggestion.acceptanceRate(), 0.0, 1.0),
+                    acceptedCount
+            );
+            resolvedSuggestions.add(resolved);
+            suggestionsBySourceWindow.computeIfAbsent(resolved.fromWindowId(), ignored -> new ArrayList<>()).add(resolved);
+        }
+
+        if (resolvedSuggestions.isEmpty()) {
+            throw new BadRequestException("diversionSuggestions", "no valid diversion suggestion can be applied");
+        }
+
+        return new DiversionPlan(
+                diversionStartMinute,
+                List.copyOf(resolvedSuggestions),
+                suggestionsBySourceWindow.entrySet().stream()
+                        .collect(LinkedHashMap::new,
+                                (map, entry) -> map.put(entry.getKey(), List.copyOf(entry.getValue())),
+                                Map::putAll)
+        );
     }
 
     private List<Diner> sampleVirtualDiners(SeedData seedData, UserProfile profile, SimulationScenario scenario) {
@@ -377,8 +511,7 @@ public class SimulationService {
                 continue;
             }
             RestaurantSeed restaurant = seedData.restaurantsById().get(window.restaurantId());
-            double serviceRate = Math.max(0.1, window.serviceRatePerMinute());
-            double estimatedWait = queueLengths.get(window.windowId()) / serviceRate;
+            double estimatedWait = windowWaitMinutes(window, queueLengths.get(window.windowId()));
             double tagScore = tagOverlapScore(diner.preferenceTags, window.matchingTags());
             double budgetScore = budgetOverlapScore(diner.budgetMin, diner.budgetMax, window.priceMin(), window.priceMax());
             double waitPenalty = estimatedWait / Math.max(1, diner.waitingToleranceMinutes);
@@ -398,9 +531,49 @@ public class SimulationService {
         }
 
         if (bestWindow == null) {
-            throw new BadRequestException("scenario.mealPeriod", "当前场景下没有可用窗口");
+            throw new BadRequestException("scenario.mealPeriod", "no window is available under the current scenario");
         }
         return new WindowChoice(bestWindow, bestWait);
+    }
+
+    private WindowChoice maybeRedirectWindow(
+            WindowChoice originalChoice,
+            DiversionPlan diversionPlan,
+            int minute,
+            SeedData seedData,
+            Map<Long, Integer> queueLengths,
+            Set<Long> closedWindowIds,
+            String mealPeriod,
+            Random rng
+    ) {
+        if (diversionPlan == null || !diversionPlan.hasSuggestions() || minute < diversionPlan.startMinute()) {
+            return originalChoice;
+        }
+
+        List<ResolvedDiversionSuggestion> candidates = diversionPlan.suggestionsBySourceWindow().get(originalChoice.window().windowId());
+        if (candidates == null || candidates.isEmpty()) {
+            return originalChoice;
+        }
+
+        for (ResolvedDiversionSuggestion candidate : candidates) {
+            WindowSeed targetWindow = seedData.windowsById().get(candidate.toWindowId());
+            if (targetWindow == null || !isWindowAvailable(targetWindow, mealPeriod, closedWindowIds)) {
+                continue;
+            }
+            int targetQueueLength = queueLengths.getOrDefault(targetWindow.windowId(), 0);
+            if (targetQueueLength >= maxReasonableTargetQueue(targetWindow)) {
+                continue;
+            }
+            double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
+            if (targetWait >= Math.max(originalChoice.estimatedWait(), 20.0)) {
+                continue;
+            }
+            if (rng.nextDouble() > candidate.acceptanceRate()) {
+                continue;
+            }
+            return new WindowChoice(targetWindow, targetWait);
+        }
+        return originalChoice;
     }
 
     private DishSeed chooseDish(
@@ -429,6 +602,47 @@ public class SimulationService {
         return bestDish;
     }
 
+    private void applyDiversionToExistingQueues(
+            SeedData seedData,
+            SimulationScenario scenario,
+            DiversionPlan diversionPlan,
+            Set<Long> closedWindowIds,
+            Map<Long, Integer> queueLengths
+    ) {
+        for (ResolvedDiversionSuggestion suggestion : diversionPlan.suggestions()) {
+            WindowSeed sourceWindow = seedData.windowsById().get(suggestion.fromWindowId());
+            WindowSeed targetWindow = seedData.windowsById().get(suggestion.toWindowId());
+            if (sourceWindow == null || targetWindow == null) {
+                continue;
+            }
+            if (!isWindowAvailable(sourceWindow, scenario.mealPeriod(), closedWindowIds)
+                    || !isWindowAvailable(targetWindow, scenario.mealPeriod(), closedWindowIds)) {
+                continue;
+            }
+
+            int sourceQueueLength = queueLengths.getOrDefault(sourceWindow.windowId(), 0);
+            int targetQueueLength = queueLengths.getOrDefault(targetWindow.windowId(), 0);
+            if (sourceQueueLength <= 0) {
+                continue;
+            }
+
+            double sourceWait = windowWaitMinutes(sourceWindow, sourceQueueLength);
+            double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
+            if (targetWait >= sourceWait) {
+                continue;
+            }
+
+            int targetCapacity = Math.max(0, maxReasonableTargetQueue(targetWindow) - targetQueueLength);
+            int movedCount = Math.min(sourceQueueLength, Math.min(suggestion.estimatedAcceptedCount(), targetCapacity));
+            if (movedCount <= 0) {
+                continue;
+            }
+
+            queueLengths.put(sourceWindow.windowId(), sourceQueueLength - movedCount);
+            queueLengths.put(targetWindow.windowId(), targetQueueLength + movedCount);
+        }
+    }
+
     private SnapshotData snapshot(
             int minute,
             SeedData seedData,
@@ -442,9 +656,8 @@ public class SimulationService {
             boolean available = isWindowAvailable(window, mealPeriod, closedWindowIds);
             String status = available ? "OPEN" : "CLOSED";
             int queueLength = available ? queueLengths.get(window.windowId()) : 0;
-            double serviceRate = Math.max(0.1, window.serviceRatePerMinute());
-            double waitMinutes = available ? queueLength / serviceRate : 0.0;
-            int servingCount = available && queueLength > 0 ? (int) Math.ceil(serviceRate) : 0;
+            double waitMinutes = available ? windowWaitMinutes(window, queueLength) : 0.0;
+            int servingCount = available && queueLength > 0 ? (int) Math.ceil(window.serviceRatePerMinute()) : 0;
             maxQueue = Math.max(maxQueue, queueLength);
             QueueState state = new QueueState(
                     window.windowId(),
@@ -557,12 +770,58 @@ public class SimulationService {
         return result;
     }
 
+    private int resolvedAcceptedCount(DiversionSuggestion suggestion) {
+        if (suggestion.estimatedAcceptedCount() != null && suggestion.estimatedAcceptedCount() > 0) {
+            return suggestion.estimatedAcceptedCount();
+        }
+        if (suggestion.suggestedUserCount() == null || suggestion.suggestedUserCount() <= 0) {
+            return 0;
+        }
+        double acceptanceRate = suggestion.acceptanceRate() == null ? 0.5 : suggestion.acceptanceRate();
+        return Math.max(1, (int) Math.round(suggestion.suggestedUserCount() * clamp(acceptanceRate, 0.0, 1.0)));
+    }
+
+    private int maxReasonableTargetQueue(WindowSeed targetWindow) {
+        return Math.max(3, (int) Math.floor(Math.max(1.0, targetWindow.serviceRatePerMinute()) * 18.0));
+    }
+
+    private double windowWaitMinutes(WindowSeed window, int queueLength) {
+        return queueLength / Math.max(0.1, window.serviceRatePerMinute());
+    }
+
+    private int resolvePeakMinute(SimulationRunResult run) {
+        SimulationTimePoint peak = run.timePoints().stream()
+                .max(Comparator
+                        .comparingInt(this::totalQueueLength)
+                        .thenComparingInt(this::totalCurrentCount)
+                        .thenComparingInt(SimulationTimePoint::minute))
+                .orElseThrow(() -> new BadRequestException("baseRunId", "baseRun has no time points"));
+        return peak.minute();
+    }
+
+    private int totalQueueLength(SimulationTimePoint timePoint) {
+        return timePoint.restaurants().stream()
+                .flatMap(restaurant -> restaurant.windows().stream())
+                .mapToInt(QueueState::queueLength)
+                .sum();
+    }
+
+    private int totalCurrentCount(SimulationTimePoint timePoint) {
+        return timePoint.restaurants().stream()
+                .mapToInt(RestaurantTimePoint::currentCount)
+                .sum();
+    }
+
     private int randomInt(Random rng, int minInclusive, int maxInclusive) {
         return minInclusive + rng.nextInt(maxInclusive - minInclusive + 1);
     }
 
     private double round(double value) {
         return Math.round(value * 10.0) / 10.0;
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private String defaultText(String value, String fallback) {
@@ -579,6 +838,27 @@ public class SimulationService {
     }
 
     private record SnapshotData(SimulationTimePoint timePoint, int maxQueueLength) {
+    }
+
+    private record DiversionPlan(
+            int startMinute,
+            List<ResolvedDiversionSuggestion> suggestions,
+            Map<Long, List<ResolvedDiversionSuggestion>> suggestionsBySourceWindow
+    ) {
+        private boolean hasSuggestions() {
+            return !suggestions.isEmpty();
+        }
+    }
+
+    private record ResolvedDiversionSuggestion(
+            long fromRestaurantId,
+            long fromWindowId,
+            long toRestaurantId,
+            long toWindowId,
+            int suggestedUserCount,
+            double acceptanceRate,
+            int estimatedAcceptedCount
+    ) {
     }
 
     private static final class Diner {

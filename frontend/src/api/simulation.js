@@ -1,6 +1,7 @@
 import { http, unwrapResponse } from './http'
 import {
   mockCompareStrategies,
+  mockGetDiversionComparison,
   mockGetDishes,
   mockGetRestaurants,
   mockGetScenarios,
@@ -8,9 +9,10 @@ import {
   mockGetUserProfiles,
   mockGetWindows,
   mockRunSimulation,
+  mockRunSimulationWithDiversion,
 } from './mock'
 
-const useMock = import.meta.env.VITE_USE_MOCK !== 'false'
+const useMock = import.meta.env.VITE_USE_MOCK === 'true'
 
 export async function getUserProfiles() {
   if (useMock) return mockGetUserProfiles()
@@ -47,7 +49,26 @@ export async function getSimulation(runId) {
   return http.get(`/simulations/${runId}`).then(unwrapResponse)
 }
 
+export async function runSimulationWithDiversion(payload) {
+  if (useMock) return mockRunSimulationWithDiversion(payload)
+  return http.post('/simulations/run-with-diversion', payload).then(unwrapResponse)
+}
+
 export async function compareStrategies(payload) {
   if (useMock) return mockCompareStrategies(payload)
   return http.post('/strategies/compare', payload).then(unwrapResponse)
+}
+
+export async function runDiversionComparison({ baseRunId, minute, targetCrowdLevel, autoRunCompare = true }) {
+  if (useMock) {
+    return mockGetDiversionComparison({ baseRunId, minute, targetCrowdLevel, autoRunCompare })
+  }
+  return http
+    .post('/strategies/diversion-comparison', {
+      baseRunId,
+      minute,
+      targetCrowdLevel,
+      autoRunCompare,
+    })
+    .then(unwrapResponse)
 }

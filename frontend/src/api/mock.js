@@ -54,6 +54,16 @@ export async function mockGetSimulation(runId) {
   return delayedClone(run)
 }
 
+export async function mockRunSimulationWithDiversion(payload) {
+  const baseRun = runs.get(Number(payload.baseRunId))
+  if (!baseRun) {
+    throw new Error(`未找到基准仿真: ${payload.baseRunId}`)
+  }
+  const compareRun = buildSimulationResult(baseRun.profile, baseRun.scenario, runSequence++)
+  runs.set(compareRun.runId, compareRun)
+  return delayedClone(compareRun)
+}
+
 export async function mockGenerateRecommendation(payload) {
   const run = runs.get(Number(payload.runId))
   if (!run) {
@@ -81,6 +91,30 @@ export async function mockCompareStrategies(payload) {
     throw new Error('缺少可对比的仿真结果')
   }
   return delayedClone(buildStrategyComparison(baseRun, compareRun))
+}
+
+export async function mockGetDiversionComparison(payload) {
+  const baseRun = runs.get(Number(payload.baseRunId))
+  if (!baseRun) {
+    throw new Error(`未找到基准仿真: ${payload.baseRunId}`)
+  }
+  const compareRun = buildSimulationResult(baseRun.profile, baseRun.scenario, runSequence++)
+  runs.set(compareRun.runId, compareRun)
+  return delayedClone({
+    baseRunId: baseRun.runId,
+    compareRunId: compareRun.runId,
+    minute: payload.minute ?? 0,
+    diversionResult: {
+      runId: baseRun.runId,
+      minute: payload.minute ?? 0,
+      suggestions: [],
+      reason: 'Mock comparison is only for local fallback.',
+    },
+    comparison: buildStrategyComparison(baseRun, compareRun),
+    baseMetrics: baseRun.metrics,
+    compareMetrics: compareRun.metrics,
+    status: 'COMPLETED',
+  })
 }
 
 function delayedClone(data) {

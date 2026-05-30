@@ -21,9 +21,7 @@ export function buildStatisticsSnapshot(run) {
   const congestionSeries = timePoints.map(congestionIndex)
   const periodComparison = buildPeriodComparison(timePoints)
 
-  const peakPoint = timePoints.reduce((peak, point) =>
-    totalQueueLength(point) > totalQueueLength(peak) ? point : peak,
-  )
+  const peakPoint = resolvePeakTimePoint(run, totalQueueLength)
 
   return {
     cards: [
@@ -37,7 +35,7 @@ export function buildStatisticsSnapshot(run) {
       ),
       metricItem(
         'seatUtilization',
-        '座位利用率',
+        '容量负载率',
         average(seatUtilizationSeries),
         '%',
         'teal',
@@ -45,15 +43,15 @@ export function buildStatisticsSnapshot(run) {
       ),
       metricItem(
         'windowEfficiency',
-        '窗口服务效率',
+        '窗口服务负载比',
         average(windowEfficiencyRows.map((item) => item.efficiency)),
         '%',
         'cyan',
-        '按窗口服务中人数与排队人数快照估算',
+        '按 serving / (serving + queue) 近似计算',
       ),
       metricItem(
         'totalDiners',
-        '总就餐人数',
+        '仿真样本人数',
         pickNumber(metrics.totalVirtualUsers, totalPeopleSeries[totalPeopleSeries.length - 1]),
         '人',
         'blue',
@@ -61,7 +59,7 @@ export function buildStatisticsSnapshot(run) {
       ),
       metricItem(
         'congestion',
-        '拥堵指数',
+        '拥挤指数',
         average(congestionSeries),
         '/100',
         'orange',
@@ -97,18 +95,25 @@ export function resolveTimePoint(run, minute) {
     return null
   }
   if (minute == null) {
-    return timePoints[timePoints.length - 1]
+    return resolvePeakTimePoint(run)
   }
-  return timePoints.find((point) => point.minute === minute) || timePoints[timePoints.length - 1]
+  return timePoints.find((point) => point.minute === minute) || resolvePeakTimePoint(run)
 }
 
-export function resolvePeakTimePoint(run, selector = totalCurrentCount) {
+export function resolvePeakTimePoint(run, selector = totalQueueLength) {
   const timePoints = Array.isArray(run?.timePoints) ? run.timePoints : []
   if (!timePoints.length) {
     return null
   }
 
-  return timePoints.reduce((peak, point) => (selector(point) > selector(peak) ? point : peak))
+  return timePoints.reduce((peak, point) => {
+    const pointScore = Number(selector(point) || 0)
+    const peakScore = Number(selector(peak) || 0)
+    if (pointScore !== peakScore) {
+      return pointScore > peakScore ? point : peak
+    }
+    return totalCurrentCount(point) > totalCurrentCount(peak) ? point : peak
+  })
 }
 
 export function totalCurrentCount(point) {
@@ -180,7 +185,6 @@ function buildWindowEfficiencyRows(timePoints) {
     .map((row) => {
       const averageQueue = row.sampleCount ? row.queueTotal / row.sampleCount : 0
       const averageServing = row.sampleCount ? row.servingTotal / row.sampleCount : 0
-      // 后端当前未直接返回窗口服务效率，这里按服务中人数占服务中+排队人数比例做近似估算。
       const efficiency =
         averageQueue + averageServing > 0
           ? (averageServing / (averageQueue + averageServing)) * 100
@@ -204,7 +208,7 @@ function buildPeriodComparison(timePoints) {
     const slice = timePoints.slice(index, index + bucketSize)
     if (!slice.length) continue
     buckets.push({
-      label: `${slice[0].minute}-${slice.at(-1).minute}分`,
+      label: `${slice[0].minute}-${slice.at(-1).minute} 分`,
       avgWait: round(average(slice.map(avgWaitMinutes)), 1),
       seatUtilization: round(average(slice.map(seatUtilizationRate)), 1),
       congestion: round(average(slice.map(congestionIndex)), 1),
@@ -227,7 +231,6 @@ function congestionIndex(point) {
     windows.length
   const seatUtilization = seatUtilizationRate(point) / 100
 
-  // 后端当前未直接返回拥堵指数，这里综合排队、等待和拥挤等级做 0-100 近似估算。
   return round(clamp(avgQueue * 2.4 + avgWait * 4.2 + crowdScore * 26 + seatUtilization * 20, 0, 100), 1)
 }
 
@@ -286,7 +289,7 @@ function clamp(value, min, max) {
 }
 
 function congestionLabel(value) {
-  if (value >= 72) return '高峰拥堵明显'
-  if (value >= 48) return '存在局部拥挤'
+  if (value >= 72) return '高峰拥挤明显'
+  if (value >= 48) return '存在局部拥堵'
   return '整体运行平稳'
 }

@@ -70,6 +70,25 @@ public final class TaskADtos {
     ) {
     }
 
+    public record DiversionSuggestion(
+            long fromRestaurantId,
+            long fromWindowId,
+            long toRestaurantId,
+            long toWindowId,
+            Integer suggestedUserCount,
+            Double acceptanceRate,
+            Integer estimatedAcceptedCount
+    ) {
+    }
+
+    public record SimulationRunWithDiversionRequest(
+            Long baseRunId,
+            Integer minute,
+            String targetCrowdLevel,
+            List<DiversionSuggestion> diversionSuggestions
+    ) {
+    }
+
     public record UserProfile(
             String userType,
             List<String> tasteTags,
@@ -139,7 +158,10 @@ public final class TaskADtos {
             SimulationScenario scenario,
             List<SimulationTimePoint> timePoints,
             EvaluationMetrics metrics,
-            String createdAt
+            String createdAt,
+            Boolean appliedDiversion,
+            Long compareSourceRunId,
+            Integer diversionStartMinute
     ) {
     }
 

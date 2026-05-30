@@ -26,6 +26,7 @@ export function buildRecommendationResult(runResult, minute, profile, limit = 3)
 
 export function buildStrategyComparison(baseRun, compareRun) {
   const avgWaitDelta = round(compareRun.metrics.avgWaitMinutes - baseRun.metrics.avgWaitMinutes, 1)
+  const maxWaitDelta = round(compareRun.metrics.maxWaitMinutes - baseRun.metrics.maxWaitMinutes, 1)
   const maxQueueDelta = compareRun.metrics.maxQueueLength - baseRun.metrics.maxQueueLength
   const busyWindowCountDelta =
     compareRun.metrics.busyWindowCount - baseRun.metrics.busyWindowCount
@@ -33,20 +34,27 @@ export function buildStrategyComparison(baseRun, compareRun) {
     compareRun.metrics.extremeWindowCount - baseRun.metrics.extremeWindowCount
   const servedUserCountDelta =
     compareRun.metrics.servedUserCount - baseRun.metrics.servedUserCount
+  const unservedUserCountDelta =
+    compareRun.metrics.unservedUserCount - baseRun.metrics.unservedUserCount
 
   return {
     baseRunId: baseRun.runId,
     compareRunId: compareRun.runId,
+    compareType: 'DIVERSION_AFTER',
     avgWaitDelta,
+    maxWaitDelta,
     maxQueueDelta,
     busyWindowCountDelta,
     extremeWindowCountDelta,
     servedUserCountDelta,
+    unservedUserCountDelta,
     conclusion: buildConclusion(
       avgWaitDelta,
+      maxWaitDelta,
       maxQueueDelta,
       busyWindowCountDelta,
       servedUserCountDelta,
+      unservedUserCountDelta,
     ),
   }
 }
@@ -145,11 +153,23 @@ function resolveTimePoint(runResult, minute) {
     throw new Error('缺少仿真时间序列')
   }
   if (minute == null) {
-    return runResult.timePoints[runResult.timePoints.length - 1]
+    return runResult.timePoints.reduce((peak, point) => {
+      const pointQueue = point.restaurants.reduce(
+        (sum, restaurant) =>
+          sum + restaurant.windows.reduce((windowSum, window) => windowSum + window.queueLength, 0),
+        0,
+      )
+      const peakQueue = peak.restaurants.reduce(
+        (sum, restaurant) =>
+          sum + restaurant.windows.reduce((windowSum, window) => windowSum + window.queueLength, 0),
+        0,
+      )
+      return pointQueue > peakQueue ? point : peak
+    })
   }
   return (
     runResult.timePoints.find((point) => point.minute === minute) ||
-    runResult.timePoints[runResult.timePoints.length - 1]
+    runResult.timePoints[0]
   )
 }
 
@@ -188,11 +208,22 @@ function buildDiversionSuggestion(timePoint, restaurantItems) {
   return `建议将${mostCrowded.name}部分人流引导至${target.name}，可降低高拥挤窗口压力`
 }
 
-function buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta, servedUserCountDelta) {
+function buildConclusion(
+  avgWaitDelta,
+  maxWaitDelta,
+  maxQueueDelta,
+  busyWindowCountDelta,
+  servedUserCountDelta,
+  unservedUserCountDelta,
+) {
   const waitText =
     avgWaitDelta <= 0
       ? `平均等待降低 ${Math.abs(avgWaitDelta)} 分钟`
       : `平均等待增加 ${avgWaitDelta} 分钟`
+  const maxWaitText =
+    maxWaitDelta <= 0
+      ? `最大等待降低 ${Math.abs(maxWaitDelta)} 分钟`
+      : `最大等待增加 ${maxWaitDelta} 分钟`
   const queueText =
     maxQueueDelta <= 0
       ? `最大排队减少 ${Math.abs(maxQueueDelta)} 人`
@@ -205,7 +236,11 @@ function buildConclusion(avgWaitDelta, maxQueueDelta, busyWindowCountDelta, serv
     servedUserCountDelta >= 0
       ? `已服务人数增加 ${servedUserCountDelta} 人`
       : `已服务人数减少 ${Math.abs(servedUserCountDelta)} 人`
-  return `${waitText}，${queueText}，${busyText}，${servedText}`
+  const unservedText =
+    unservedUserCountDelta <= 0
+      ? `未服务人数减少 ${Math.abs(unservedUserCountDelta)} 人`
+      : `未服务人数增加 ${unservedUserCountDelta} 人`
+  return `${waitText}，${maxWaitText}，${queueText}，${busyText}，${servedText}，${unservedText}`
 }
 
 function withRank(item, index) {

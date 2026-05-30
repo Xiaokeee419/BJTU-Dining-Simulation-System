@@ -4,6 +4,7 @@ import com.bjtu.dining.common.ApiResponse;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunRequest;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunResult;
+import com.bjtu.dining.taska.model.TaskADtos.SimulationRunWithDiversionRequest;
 import com.bjtu.dining.taska.model.TaskADtos.TimelineResponse;
 import com.bjtu.dining.taska.service.SimulationService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,6 +26,13 @@ public class SimulationController {
     @PostMapping("/run")
     public ApiResponse<SimulationRunResult> run(@RequestBody(required = false) SimulationRunRequest request) {
         return ApiResponse.ok(simulationService.runSimulation(request));
+    }
+
+    @PostMapping("/run-with-diversion")
+    public ApiResponse<SimulationRunResult> runWithDiversion(
+            @RequestBody SimulationRunWithDiversionRequest request
+    ) {
+        return ApiResponse.ok(simulationService.runSimulationWithDiversion(request));
     }
 
     @GetMapping("/{runId}")

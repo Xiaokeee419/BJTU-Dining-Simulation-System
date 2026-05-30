@@ -2,15 +2,20 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import {
-  compareStrategies,
   getDishes,
   getRestaurants,
   getScenarioPresets,
+  getSimulation,
   getUserProfiles,
   getWindows,
+  runDiversionComparison as requestDiversionComparison,
   runSimulation,
 } from '../api/simulation'
-import { generateRecommendation } from '../api/recommendation'
+import {
+  generateDiversionSuggestion,
+  generateRecommendation,
+} from '../api/recommendation'
+import { resolvePeakTimePoint } from '../utils/simulationStats'
 
 export const useSimulationStore = defineStore('simulation', () => {
   const profiles = ref([])
@@ -27,14 +32,19 @@ export const useSimulationStore = defineStore('simulation', () => {
   const strategyForm = ref(defaultStrategyForm())
 
   const currentRun = ref(null)
-  const baseRun = ref(null)
+  const baselineRun = ref(null)
   const compareRun = ref(null)
   const recommendation = ref(null)
-  const comparison = ref(null)
+  const diversionResult = ref(null)
+  const strategyComparison = ref(null)
+  const baseMetrics = ref(null)
+  const compareMetrics = ref(null)
+  const diversionComparisonStatus = ref('IDLE')
+  const selectedCompareMinute = ref(null)
+  const comparisonError = ref('')
   const currentMinute = ref(0)
   const loading = ref(false)
   const running = ref(false)
-  const comparing = ref(false)
   const lastRunMeta = ref(loadLastRunMeta())
   let initializePromise = null
 
@@ -49,6 +59,11 @@ export const useSimulationStore = defineStore('simulation', () => {
   const maxMinute = computed(() =>
     timePoints.value.length ? timePoints.value[timePoints.value.length - 1].minute : 0,
   )
+  const comparing = computed(() => diversionComparisonStatus.value === 'RUNNING')
+
+  const baseRun = computed(() => baselineRun.value)
+  const diversion = computed(() => diversionResult.value)
+  const comparison = computed(() => strategyComparison.value)
 
   async function initializeDashboard({ force = false } = {}) {
     if (initialized.value && !force) {
@@ -147,8 +162,10 @@ export const useSimulationStore = defineStore('simulation', () => {
         scenario: clone(scenarioForm.value),
       })
       currentRun.value = run
-      currentMinute.value = run.timePoints.at(-1)?.minute || 0
-      await refreshRecommendation()
+      currentMinute.value = resolveDefaultMinute(run)
+      selectedCompareMinute.value = currentMinute.value
+      clearComparisonState({ clearBaseline: true })
+      await refreshRecommendation({ minute: currentMinute.value })
       lastRunMeta.value = rememberRun(run)
       ElMessage.success('仿真完成')
     } finally {
@@ -156,18 +173,48 @@ export const useSimulationStore = defineStore('simulation', () => {
     }
   }
 
-  async function refreshRecommendation() {
+  async function refreshRecommendation({ minute = currentMinute.value } = {}) {
     if (!currentRun.value) return
-    recommendation.value = await generateRecommendation({
+    const selectedMinute = resolveRecommendationMinute(currentRun.value, minute)
+    currentMinute.value = selectedMinute
+    if (selectedCompareMinute.value == null) {
+      selectedCompareMinute.value = selectedMinute
+    }
+
+    const recommendationPayload = {
       runId: currentRun.value.runId,
-      minute: currentMinute.value,
+      minute: selectedMinute,
       profile: clone(profileForm.value),
       limit: 3,
-    })
+    }
+    const diversionPayload = {
+      runId: currentRun.value.runId,
+      minute: selectedMinute,
+      targetCrowdLevel: resolveDiversionTargetLevel(
+        currentRun.value?.scenario?.crowdLevel || scenarioForm.value.crowdLevel,
+      ),
+      profile: clone(profileForm.value),
+    }
+
+    const [recommendationResponse, diversionResponse] = await Promise.all([
+      generateRecommendation(recommendationPayload),
+      generateDiversionSuggestion(diversionPayload),
+    ])
+
+    recommendation.value = recommendationResponse
+    if (!strategyComparison.value) {
+      diversionResult.value = diversionResponse
+    }
   }
 
   function setCurrentMinute(minute) {
     currentMinute.value = minute
+  }
+
+  function setSelectedCompareMinute(minute) {
+    selectedCompareMinute.value = minute
+    currentMinute.value = minute
+    clearComparisonState({ clearBaseline: false, preserveDiversionSuggestion: false })
   }
 
   function resetForms() {
@@ -184,49 +231,101 @@ export const useSimulationStore = defineStore('simulation', () => {
     ElMessage.success('已重置为当前预设')
   }
 
-  function setBaseRun() {
-    if (!currentRun.value) return
-    baseRun.value = clone(currentRun.value)
-    comparison.value = null
-    compareRun.value = null
-    ElMessage.success('已设置基准场景')
-  }
-
-  async function runCompareSimulation() {
-    if (!baseRun.value) {
-      ElMessage.warning('请先设置基准场景')
+  function saveBaselineRun() {
+    const sourceRun = currentRun.value
+    if (!sourceRun || sourceRun.status !== 'FINISHED') {
+      ElMessage.warning('请先完成一次仿真，再保存基准方案')
       return
     }
-    comparing.value = true
+    baselineRun.value = clone(sourceRun)
+    baseMetrics.value = clone(sourceRun.metrics || null)
+    selectedCompareMinute.value = resolvePeakMinute(sourceRun)
+    clearComparisonState({ clearBaseline: false, preserveDiversionSuggestion: true })
+    ElMessage.success('已保存未分流基准方案')
+  }
+
+  async function runDiversionComparison() {
+    const sourceRun = baselineRun.value || currentRun.value
+    if (!sourceRun || sourceRun.status !== 'FINISHED') {
+      ElMessage.warning('请先完成一次仿真')
+      return
+    }
+
+    if (!baselineRun.value) {
+      baselineRun.value = clone(sourceRun)
+      baseMetrics.value = clone(sourceRun.metrics || null)
+    }
+
+    const minute = selectedCompareMinute.value ?? resolvePeakMinute(baselineRun.value)
+    diversionComparisonStatus.value = 'RUNNING'
+    comparisonError.value = ''
+    strategyComparison.value = null
+    compareRun.value = null
+    compareMetrics.value = null
+
     try {
-      const run = await runSimulation({
-        profile: clone(profileForm.value),
-        scenario: clone(scenarioForm.value),
+      const result = await requestDiversionComparison({
+        baseRunId: baselineRun.value.runId,
+        minute,
+        targetCrowdLevel: resolveDiversionTargetLevel(
+          baselineRun.value?.scenario?.crowdLevel || scenarioForm.value.crowdLevel,
+        ),
+        autoRunCompare: true,
       })
-      compareRun.value = run
-      currentRun.value = run
-      currentMinute.value = run.timePoints.at(-1)?.minute || 0
-      recommendation.value = await generateRecommendation({
-        runId: run.runId,
-        minute: currentMinute.value,
-        profile: clone(profileForm.value),
-        limit: 3,
-      })
-      comparison.value = await compareStrategies({
-        baseRunId: baseRun.value.runId,
-        compareRunId: run.runId,
-      })
-      lastRunMeta.value = rememberRun(run)
-      ElMessage.success('对比完成')
-    } finally {
-      comparing.value = false
+
+      selectedCompareMinute.value = result.minute
+      diversionResult.value = result.diversionResult || null
+      strategyComparison.value = result.comparison || null
+      baseMetrics.value = result.baseMetrics || baselineRun.value.metrics || null
+      compareMetrics.value = result.compareMetrics || null
+
+      if (result.compareRunId) {
+        compareRun.value = await getSimulation(result.compareRunId)
+      } else {
+        compareRun.value = null
+      }
+
+      if (result.compareRunId && result.comparison && compareRun.value?.runId === result.compareRunId) {
+        diversionComparisonStatus.value = 'COMPLETED'
+        ElMessage.success('分流对比已完成')
+      } else {
+        diversionComparisonStatus.value = 'IDLE'
+        if (result.diversionResult?.reason) {
+          ElMessage.warning(result.diversionResult.reason)
+        }
+      }
+    } catch (error) {
+      diversionComparisonStatus.value = 'ERROR'
+      comparisonError.value = error.message || '分流对比失败'
+      throw error
     }
   }
 
   function clearComparison() {
-    baseRun.value = null
+    clearComparisonState({ clearBaseline: true, preserveDiversionSuggestion: false })
+    ElMessage.success('已清除分流对比结果')
+  }
+
+  function clearComparisonState({
+    clearBaseline = false,
+    preserveDiversionSuggestion = false,
+  } = {}) {
+    if (clearBaseline) {
+      baselineRun.value = null
+      baseMetrics.value = null
+    }
     compareRun.value = null
-    comparison.value = null
+    compareMetrics.value = null
+    strategyComparison.value = null
+    diversionComparisonStatus.value = 'IDLE'
+    comparisonError.value = ''
+    if (!preserveDiversionSuggestion) {
+      diversionResult.value = null
+    }
+  }
+
+  function resolvePeakMinute(run) {
+    return resolvePeakMinuteValue(run)
   }
 
   function saveCurrentScheme() {
@@ -255,10 +354,16 @@ export const useSimulationStore = defineStore('simulation', () => {
     scenarioForm,
     strategyForm,
     currentRun,
-    baseRun,
+    baselineRun,
     compareRun,
     recommendation,
-    comparison,
+    diversionResult,
+    strategyComparison,
+    baseMetrics,
+    compareMetrics,
+    diversionComparisonStatus,
+    selectedCompareMinute,
+    comparisonError,
     currentMinute,
     currentTimePoint,
     maxMinute,
@@ -266,19 +371,50 @@ export const useSimulationStore = defineStore('simulation', () => {
     running,
     comparing,
     lastRunMeta,
+    baseRun,
+    diversion,
+    comparison,
     initializeDashboard,
     applyProfilePreset,
     applyScenarioPreset,
     runCurrentSimulation,
     refreshRecommendation,
     setCurrentMinute,
+    setSelectedCompareMinute,
     resetForms,
-    setBaseRun,
-    runCompareSimulation,
+    saveBaselineRun,
+    resolvePeakMinute,
+    runDiversionComparison,
     clearComparison,
     saveCurrentScheme,
+    setBaseRun: saveBaselineRun,
+    runCompareSimulation: runDiversionComparison,
   }
 })
+
+function resolveDefaultMinute(run) {
+  return resolvePeakMinuteValue(run)
+}
+
+function resolveRecommendationMinute(run, minute) {
+  if (minute != null && run?.timePoints?.some((point) => point.minute === minute)) {
+    return minute
+  }
+  return resolveDefaultMinute(run)
+}
+
+function resolvePeakMinuteValue(run) {
+  const peakPoint = resolvePeakTimePoint(run)
+  if (peakPoint?.minute != null) {
+    return peakPoint.minute
+  }
+  return run?.timePoints?.[0]?.minute || 0
+}
+
+function resolveDiversionTargetLevel(crowdLevel) {
+  const normalized = String(crowdLevel || 'NORMAL').toUpperCase()
+  return normalized === 'IDLE' ? 'IDLE' : 'NORMAL'
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))

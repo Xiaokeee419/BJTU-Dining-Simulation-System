@@ -1,192 +1,191 @@
 <template>
   <main class="page-shell page-stack">
-    <section class="panel recommendation-hero">
-      <div class="hero-copy">
-        <p class="eyebrow">推荐结果</p>
-        <h1>仿真推荐结果</h1>
-        <p class="page-description">
-          基于仿真分析，本系统为当前场景生成优化建议，帮助提升就餐体验与运营效率。
-        </p>
-      </div>
-      <div class="hero-scene"></div>
-    </section>
-
     <PageHeader
-      title="当前分钟推荐与方案评估"
-      description="保留原有推荐接口与场景对比能力，并将结果组织为更适合展示和决策的页面结构。"
+      eyebrow="分流决策"
+      title="分流决策与效果对比"
+      description="基于当前仿真高峰快照生成分流建议，并通过对比分流前后的仿真指标，评估分流策略对排队压力和服务效率的改善效果。"
     >
       <template #actions>
-        <el-button :disabled="!currentRun" @click="store.setBaseRun">保存 baseline</el-button>
+        <el-button :disabled="!currentRun" @click="handleSaveBaseline">保存为未分流基准</el-button>
         <el-button
           type="success"
-          :disabled="!baseRun"
+          :disabled="!currentRun && !baselineRun"
           :loading="comparing"
-          @click="handleCompare"
+          @click="handleRunComparison"
         >
-          运行对比
+          运行分流对比
+        </el-button>
+        <el-button plain :disabled="!hasAnyComparisonState" @click="store.clearComparison">
+          清除对比
         </el-button>
       </template>
     </PageHeader>
 
     <EmptyState
-      v-if="!currentRun || !insights"
+      v-if="!currentRun"
       title="请先运行仿真"
-      description="推荐结果页需要依赖仿真 Run 和推荐接口返回值。完成仿真后，这里会展示建议方案、效果预估和基准对比。"
+      description="推荐页依赖真实仿真 runId。完成一次仿真后，这里会展示分流建议、策略对比和辅助推荐。"
     />
 
     <template v-else>
-      <section class="card-grid-3">
+      <section class="card-grid-4">
         <StatCard
-          :icon="Grid"
-          label="推荐开放窗口数"
-          :value="insights.topCards[0].value"
-          :unit="insights.topCards[0].unit"
-          caption="建议"
-          :delta="insights.topCards[0].note"
-          delta-state="neutral"
+          :icon="Tickets"
+          label="基准方案"
+          :value="baselineRun ? `#${baselineRun.runId}` : '未保存'"
+          caption="未执行分流"
+          :delta="baselineSummary"
+          :delta-state="baselineRun ? 'neutral' : 'danger'"
         />
         <StatCard
           :icon="Clock"
-          label="预计高峰时段"
-          :value="insights.topCards[1].value"
-          :unit="insights.topCards[1].unit"
-          caption="建议"
-          :delta="insights.topCards[1].note"
+          label="推荐时间点"
+          :value="selectedMinuteLabel"
+          caption="默认使用高峰快照"
+          :delta="generatedAtLabel"
           delta-state="neutral"
           tone="teal"
         />
         <StatCard
+          :icon="Share"
+          label="分流建议数"
+          :value="suggestionCount"
+          unit="条"
+          caption="基于基准方案生成"
+          :delta="diversionReason"
+          delta-state="neutral"
+          tone="orange"
+        />
+        <StatCard
           :icon="TrendCharts"
-          label="预期优化效果"
-          :value="insights.topCards[2].value"
-          unit=""
-          caption="综合"
-          :delta="insights.topCards[2].note"
-          delta-state="positive"
+          label="对比状态"
+          :value="comparisonStatusLabel"
+          caption="需要 baseRunId 和 compareRunId"
+          :delta="comparisonStatusDetail"
+          :delta-state="comparisonStatusState"
           tone="green"
         />
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2 class="panel-title">推荐时间点</h2>
-            <p class="panel-subtitle">拖动时间轴可以刷新第 {{ currentMinute }} 分钟的推荐结果。</p>
-          </div>
+      <SectionCard
+        title="分析时间点"
+        subtitle="默认选择高峰分钟。拖动滑块会刷新当前基准 run 的推荐与分流建议，并清空旧的 compare 结果。"
+      >
+        <el-slider
+          :model-value="currentMinute"
+          :min="0"
+          :max="maxMinute"
+          :step="timeStep"
+          :format-tooltip="formatMinute"
+          @change="handleMinuteChange"
+        />
+      </SectionCard>
+
+      <SectionCard
+        title="分流建议列表"
+        subtitle="展示从哪个窗口分流到哪个窗口、建议分流人数、接受率和预计等待改善。"
+      >
+        <DiversionSuggestionList
+          :suggestions="diversionResult?.suggestions || []"
+          :reason="diversionReason"
+          :resolve-window-label="resolveWindowLabel"
+        />
+      </SectionCard>
+
+      <SectionCard
+        title="分流前后效果对比"
+        subtitle="只有拿到 baseline 与 compare 两轮真实仿真结果后，才会展示指标对比、趋势图和策略结论。"
+      >
+        <DiversionComparisonPanel
+          :comparison="strategyComparison"
+          :base-metrics="effectiveBaseMetrics"
+          :compare-metrics="effectiveCompareMetrics"
+          :baseline-run="baselineRun"
+          :compare-run="compareRun"
+        />
+      </SectionCard>
+
+      <SectionCard
+        title="辅助推荐详情"
+        subtitle="餐厅、窗口、菜品推荐保留为辅助信息，不作为本页主线。"
+      >
+        <div class="recommendation-grid">
+          <article class="recommendation-panel">
+            <div class="panel-head">
+              <h3>餐厅推荐</h3>
+              <span>{{ recommendation?.restaurants?.length || 0 }} 条</span>
+            </div>
+            <div v-if="recommendation?.restaurants?.length" class="recommendation-list">
+              <div
+                v-for="item in recommendation.restaurants"
+                :key="`restaurant-${item.targetId}`"
+                class="recommendation-item"
+              >
+                <div class="item-head">
+                  <strong>{{ item.name }}</strong>
+                  <span class="item-rank">#{{ item.rank }}</span>
+                </div>
+                <p>{{ item.reason }}</p>
+                <div class="item-meta">
+                  <span>预计等待 {{ item.estimatedWaitMinutes }} 分钟</span>
+                  <span>{{ crowdLabel(item.crowdLevel) }}</span>
+                </div>
+              </div>
+            </div>
+            <EmptyState v-else title="暂无餐厅推荐" description="当前分钟没有返回餐厅推荐结果。" />
+          </article>
+
+          <article class="recommendation-panel">
+            <div class="panel-head">
+              <h3>窗口推荐</h3>
+              <span>{{ recommendation?.windows?.length || 0 }} 条</span>
+            </div>
+            <div v-if="recommendation?.windows?.length" class="recommendation-list">
+              <div
+                v-for="item in recommendation.windows"
+                :key="`window-${item.targetId}`"
+                class="recommendation-item"
+              >
+                <div class="item-head">
+                  <strong>{{ item.name }}</strong>
+                  <span class="item-rank">#{{ item.rank }}</span>
+                </div>
+                <p>{{ item.reason }}</p>
+                <div class="item-meta">
+                  <span>{{ relatedRestaurantName(item.relatedRestaurantId) }}</span>
+                  <span>预计等待 {{ item.estimatedWaitMinutes }} 分钟</span>
+                </div>
+              </div>
+            </div>
+            <EmptyState v-else title="暂无窗口推荐" description="当前分钟没有返回窗口推荐结果。" />
+          </article>
+
+          <article class="recommendation-panel">
+            <div class="panel-head">
+              <h3>菜品推荐</h3>
+              <span>{{ recommendation?.dishes?.length || 0 }} 条</span>
+            </div>
+            <div v-if="recommendation?.dishes?.length" class="recommendation-list">
+              <div
+                v-for="item in recommendation.dishes"
+                :key="`dish-${item.targetId}`"
+                class="recommendation-item"
+              >
+                <div class="item-head">
+                  <strong>{{ item.name }}</strong>
+                  <span class="item-rank">#{{ item.rank }}</span>
+                </div>
+                <p>{{ item.reason }}</p>
+                <div class="item-meta">
+                  <span>{{ relatedWindowName(item.relatedWindowId) }}</span>
+                  <span>预计等待 {{ item.estimatedWaitMinutes }} 分钟</span>
+                </div>
+              </div>
+            </div>
+            <EmptyState v-else title="暂无菜品推荐" description="当前分钟没有返回菜品推荐结果。" />
+          </article>
         </div>
-        <div class="panel-body">
-          <el-slider
-            :model-value="currentMinute"
-            :min="0"
-            :max="maxMinute"
-            :step="timeStep"
-            :format-tooltip="formatMinute"
-            @change="handleMinuteChange"
-          />
-        </div>
-      </section>
-
-      <section class="section-grid">
-        <section class="plan-zone panel">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">推荐方案</h2>
-              <p class="panel-subtitle">系统基于当前结果给出的四项优先建议。</p>
-            </div>
-          </div>
-          <div class="panel-body recommendation-list">
-            <RecommendationItemCard
-              v-for="item in insights.planItems"
-              :key="item.rank"
-              :rank="item.rank"
-              :title="item.title"
-              :description="item.description"
-              :priority="item.priority"
-            />
-          </div>
-        </section>
-
-        <section class="effect-zone panel">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">方案效果预估</h2>
-              <p class="panel-subtitle">对比当前方案与推荐方案的关键指标变化。</p>
-            </div>
-          </div>
-          <div class="panel-body effect-table">
-            <div class="effect-head">
-              <span>指标</span>
-              <span>当前方案</span>
-              <span>推荐方案</span>
-              <span>变化</span>
-            </div>
-            <div v-for="row in insights.effectRows" :key="row.label" class="effect-row">
-              <div class="metric-name">
-                <strong>{{ row.label }}</strong>
-                <span>{{ row.unit }}</span>
-              </div>
-              <div class="metric-bar">
-                <div class="bar current" :style="{ width: barWidth(row.current, row.recommended) }"></div>
-                <strong>{{ row.current }}</strong>
-              </div>
-              <div class="metric-bar">
-                <div class="bar target" :style="{ width: barWidth(row.recommended, row.current) }"></div>
-                <strong>{{ row.recommended }}</strong>
-              </div>
-              <div class="metric-delta" :class="deltaClass(row.current, row.recommended, row.label)">
-                {{ metricDelta(row.current, row.recommended, row.label) }}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="priority-zone page-stack">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2 class="panel-title">执行优先级</h2>
-                <p class="panel-subtitle">建议优先处理能快速缓解排队的策略。</p>
-              </div>
-            </div>
-            <div class="panel-body priority-list">
-              <div v-for="item in insights.priorities" :key="item.title" class="priority-row">
-                <span class="priority-badge" :class="item.priority">{{ item.priority === 'high' ? '高优先级' : '中优先级' }}</span>
-                <strong>{{ item.title }}</strong>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <h2 class="panel-title">操作建议</h2>
-                <p class="panel-subtitle">可以保存当前方案，或直接把建议带回下一轮仿真。</p>
-              </div>
-            </div>
-            <div class="panel-body action-box">
-              <p v-for="item in insights.suggestions" :key="item">{{ item }}</p>
-              <div class="action-row">
-                <el-button @click="store.saveCurrentScheme">保存推荐方案</el-button>
-                <el-button type="primary" @click="applyNextRound">应用到下一轮仿真</el-button>
-              </div>
-            </div>
-          </section>
-        </section>
-      </section>
-
-      <section class="section-grid">
-        <div class="raw-recommendation">
-          <RecommendationPanel :recommendation="recommendation" />
-        </div>
-        <div class="raw-compare">
-          <ComparePanel
-            :base-run="baseRun"
-            :compare-run="compareRun"
-            :comparison="comparison"
-            @clear="store.clearComparison"
-          />
-        </div>
-      </section>
+      </SectionCard>
     </template>
   </main>
 </template>
@@ -194,45 +193,128 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Clock, Grid, TrendCharts } from '@element-plus/icons-vue'
+import { Clock, Share, Tickets, TrendCharts } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import ComparePanel from '../components/ComparePanel.vue'
+import DiversionComparisonPanel from '../components/DiversionComparisonPanel.vue'
+import DiversionSuggestionList from '../components/DiversionSuggestionList.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
-import RecommendationItemCard from '../components/RecommendationItemCard.vue'
-import RecommendationPanel from '../components/RecommendationPanel.vue'
+import SectionCard from '../components/SectionCard.vue'
 import StatCard from '../components/StatCard.vue'
 import { useSimulationStore } from '../stores/simulationStore'
-import { buildRecommendationInsights } from '../utils/recommendationInsights'
 
 const store = useSimulationStore()
 const {
   currentRun,
-  baseRun,
+  baselineRun,
   compareRun,
-  comparison,
   recommendation,
+  diversionResult,
+  strategyComparison,
+  baseMetrics,
+  compareMetrics,
+  diversionComparisonStatus,
+  selectedCompareMinute,
+  comparisonError,
   currentMinute,
   maxMinute,
   scenarioForm,
-  strategyForm,
-  windows,
   profiles,
   scenarios,
+  windows,
   comparing,
 } = storeToRefs(store)
 
-const insights = computed(() =>
-  buildRecommendationInsights({
-    currentRun: currentRun.value,
-    baseRun: baseRun.value,
-    compareRun: compareRun.value,
-    comparison: comparison.value,
-    recommendation: recommendation.value,
-    windows: windows.value,
-  }),
-)
 const timeStep = computed(() => Number(currentRun.value?.scenario?.stepMinutes || scenarioForm.value.stepMinutes || 5))
+
+const suggestionCount = computed(() => diversionResult.value?.suggestions?.length || 0)
+
+const diversionReason = computed(
+  () => diversionResult.value?.reason || '尚未生成分流建议',
+)
+
+const selectedMinuteLabel = computed(() => {
+  const minute = selectedCompareMinute.value ?? currentMinute.value ?? 0
+  return `第 ${minute} 分钟`
+})
+
+const generatedAtLabel = computed(() => {
+  const raw = recommendation.value?.generatedAt
+  if (!raw) return '默认使用高峰快照'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return String(raw)
+  return `推荐更新时间 ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+})
+
+const effectiveBaseMetrics = computed(() => baseMetrics.value || baselineRun.value?.metrics || null)
+const effectiveCompareMetrics = computed(() => compareMetrics.value || compareRun.value?.metrics || null)
+
+const hasCompletedComparison = computed(
+  () =>
+    diversionComparisonStatus.value === 'COMPLETED' &&
+    strategyComparison.value &&
+    compareRun.value?.runId &&
+    strategyComparison.value.compareRunId,
+)
+
+const comparisonStatusLabel = computed(() => {
+  if (hasCompletedComparison.value) return '已完成'
+  if (diversionComparisonStatus.value === 'RUNNING') return '运行中'
+  if (diversionComparisonStatus.value === 'ERROR') return '失败'
+  return '未运行'
+})
+
+const comparisonStatusState = computed(() => {
+  if (hasCompletedComparison.value) return 'neutral'
+  if (diversionComparisonStatus.value === 'ERROR') return 'danger'
+  return 'neutral'
+})
+
+const comparisonStatusDetail = computed(() => {
+  if (hasCompletedComparison.value) return strategyComparison.value?.conclusion || '已生成真实对比结果'
+  if (diversionComparisonStatus.value === 'RUNNING') return '正在调用分流建议、compare 仿真与策略对比接口'
+  if (diversionComparisonStatus.value === 'ERROR') return comparisonError.value || '分流对比失败'
+  return diversionReason.value
+})
+
+const baselineSummary = computed(() => {
+  if (!baselineRun.value) return '请先保存当前 run'
+  const avgWait = baselineRun.value.metrics?.avgWaitMinutes ?? '--'
+  const maxQueue = baselineRun.value.metrics?.maxQueueLength ?? '--'
+  return `平均等待 ${avgWait} 分钟 / 最大排队 ${maxQueue} 人`
+})
+
+const hasAnyComparisonState = computed(
+  () =>
+    Boolean(
+      baselineRun.value ||
+        compareRun.value ||
+        diversionResult.value ||
+        strategyComparison.value ||
+        comparisonError.value,
+    ),
+)
+
+const restaurantLookup = computed(() => {
+  const map = new Map()
+  ;[currentRun.value, baselineRun.value, compareRun.value].forEach((run) => {
+    ;(run?.timePoints || []).forEach((point) => {
+      ;(point.restaurants || []).forEach((restaurant) => {
+        map.set(restaurant.restaurantId, restaurant.name)
+        ;(restaurant.windows || []).forEach((window) => {
+          map.set(`window:${window.windowId}`, `${restaurant.name} / ${window.name}`)
+        })
+      })
+    })
+  })
+  ;(windows.value || []).forEach((window) => {
+    if (!map.has(`window:${window.windowId}`)) {
+      const restaurantName = map.get(window.restaurantId) || `餐厅 ${window.restaurantId}`
+      map.set(`window:${window.windowId}`, `${restaurantName} / ${window.name}`)
+    }
+  })
+  return map
+})
 
 onMounted(async () => {
   try {
@@ -241,256 +323,142 @@ onMounted(async () => {
       await store.runCurrentSimulation()
     }
     if (currentRun.value && !recommendation.value) {
-      await store.refreshRecommendation()
+      await store.refreshRecommendation({ minute: currentMinute.value })
     }
   } catch (error) {
     ElMessage.error(error.message || '推荐页初始化失败')
   }
 })
 
-async function handleCompare() {
+function handleSaveBaseline() {
+  store.saveBaselineRun()
+}
+
+async function handleRunComparison() {
   try {
-    await store.runCompareSimulation()
+    await store.runDiversionComparison()
   } catch (error) {
-    ElMessage.error(error.message || '运行对比失败')
+    ElMessage.error(error.message || '运行分流对比失败')
   }
 }
 
 async function handleMinuteChange(minute) {
-  store.setCurrentMinute(minute)
+  store.setSelectedCompareMinute(minute)
   try {
-    await store.refreshRecommendation()
+    await store.refreshRecommendation({ minute })
   } catch (error) {
     ElMessage.error(error.message || '刷新推荐失败')
   }
-}
-
-function applyNextRound() {
-  strategyForm.value.peakDiversion = 'ENABLED'
-  scenarioForm.value.closedWindowIds = []
-  ElMessage.success('已将建议带回参数配置，可继续运行下一轮仿真')
 }
 
 function formatMinute(value) {
   return `第 ${value} 分钟`
 }
 
-function barWidth(value, fallback) {
-  const max = Math.max(Number(value || 0), Number(fallback || 0), 1)
-  return `${Math.round((Number(value || 0) / max) * 100)}%`
+function crowdLabel(level) {
+  return (
+    {
+      IDLE: '空闲',
+      NORMAL: '正常',
+      BUSY: '繁忙',
+      EXTREME: '极拥挤',
+    }[level] || level
+  )
 }
 
-function metricDelta(current, recommended, label) {
-  const delta = Number(recommended || 0) - Number(current || 0)
-  const inverseMetric = label.includes('排队') || label.includes('拥堵')
-  const normalized = inverseMetric ? -delta : delta
-  if (normalized > 0) return `+${Math.round(normalized * 10) / 10}`
-  return `${Math.round(normalized * 10) / 10}`
+function relatedRestaurantName(restaurantId) {
+  return restaurantLookup.value.get(restaurantId) || `餐厅 ${restaurantId}`
 }
 
-function deltaClass(current, recommended, label) {
-  const delta = Number(recommended || 0) - Number(current || 0)
-  const inverseMetric = label.includes('排队') || label.includes('拥堵')
-  const normalized = inverseMetric ? -delta : delta
-  if (normalized > 0) return 'good'
-  if (normalized < 0) return 'bad'
-  return ''
+function relatedWindowName(windowId) {
+  return restaurantLookup.value.get(`window:${windowId}`) || `窗口 ${windowId}`
+}
+
+function resolveWindowLabel(restaurantId, windowId) {
+  return (
+    restaurantLookup.value.get(`window:${windowId}`) ||
+    `${relatedRestaurantName(restaurantId)} / 窗口 ${windowId}`
+  )
 }
 </script>
 
 <style scoped>
-.recommendation-hero {
+.recommendation-grid {
   display: grid;
-  grid-template-columns: 1fr 0.9fr;
-  min-height: 220px;
-  overflow: hidden;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
 }
 
-.hero-copy {
-  padding: 32px 36px;
+.recommendation-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #dbe4ee;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
-.hero-copy h1 {
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-head h3 {
   margin: 0;
-  color: #14316f;
-  font-size: 32px;
+  color: #0f172a;
+  font-size: 16px;
 }
 
-.hero-scene {
-  min-height: 220px;
-  background:
-    linear-gradient(90deg, rgb(255 255 255 / 8%) 0%, rgb(255 255 255 / 0%) 20%, rgb(255 255 255 / 0%) 100%),
-    url("../assets/hero.png") center / cover no-repeat,
-    linear-gradient(180deg, #e8f0ff 0%, #f8fbff 100%);
-}
-
-.plan-zone {
-  grid-column: span 4;
-}
-
-.effect-zone {
-  grid-column: span 5;
-}
-
-.priority-zone {
-  grid-column: span 3;
+.panel-head span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .recommendation-list {
   display: grid;
-  gap: 14px;
-}
-
-.effect-table {
-  display: grid;
-  gap: 14px;
-}
-
-.effect-head,
-.effect-row {
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr 0.9fr 0.6fr;
-  gap: 14px;
-  align-items: center;
-}
-
-.effect-head {
-  padding-bottom: 10px;
-  border-bottom: 1px solid #e5e7eb;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.effect-row {
-  padding-bottom: 10px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.metric-name strong {
-  display: block;
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.metric-name span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.metric-bar {
-  display: grid;
-  gap: 8px;
-}
-
-.bar {
-  height: 14px;
-  border-radius: 999px;
-}
-
-.bar.current {
-  background: linear-gradient(90deg, #cbd5e1 0%, #94a3b8 100%);
-}
-
-.bar.target {
-  background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
-}
-
-.metric-bar strong {
-  color: #334155;
-  font-size: 13px;
-}
-
-.metric-delta {
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.metric-delta.good {
-  color: #16a34a;
-}
-
-.metric-delta.bad {
-  color: #ef4444;
-}
-
-.priority-list {
-  display: grid;
-  gap: 10px;
-}
-
-.priority-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-}
-
-.priority-badge {
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.priority-badge.high {
-  color: #dc2626;
-  background: #fef2f2;
-}
-
-.priority-badge.medium {
-  color: #ea580c;
-  background: #fff7ed;
-}
-
-.priority-row strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.action-box {
-  display: grid;
   gap: 12px;
 }
 
-.action-box p {
+.recommendation-item {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.item-head,
+.item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.item-head strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.item-rank,
+.item-meta {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recommendation-item p {
   margin: 0;
   color: #475569;
   line-height: 1.7;
 }
 
-.action-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.raw-recommendation {
-  grid-column: span 7;
-}
-
-.raw-compare {
-  grid-column: span 5;
-}
-
-@media (max-width: 1100px) {
-  .recommendation-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .plan-zone,
-  .effect-zone,
-  .priority-zone,
-  .raw-recommendation,
-  .raw-compare {
-    grid-column: auto;
-  }
-
-  .effect-head,
-  .effect-row {
+@media (max-width: 1200px) {
+  .recommendation-grid {
     grid-template-columns: 1fr;
   }
 }

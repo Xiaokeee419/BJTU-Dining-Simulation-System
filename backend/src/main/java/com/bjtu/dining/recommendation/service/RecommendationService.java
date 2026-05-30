@@ -1,6 +1,8 @@
 package com.bjtu.dining.recommendation.service;
 
 import com.bjtu.dining.common.ApiException;
+import com.bjtu.dining.recommendation.dto.DiversionComparisonRequest;
+import com.bjtu.dining.recommendation.dto.DiversionComparisonResult;
 import com.bjtu.dining.recommendation.dto.DiversionRequest;
 import com.bjtu.dining.recommendation.dto.DiversionResult;
 import com.bjtu.dining.recommendation.dto.DiversionSuggestionItem;
@@ -20,6 +22,8 @@ import com.bjtu.dining.recommendation.model.WindowParameter;
 import com.bjtu.dining.recommendation.model.WindowSnapshot;
 import com.bjtu.dining.recommendation.repository.CsvSeedRepository;
 import com.bjtu.dining.recommendation.repository.RecommendationStore;
+import com.bjtu.dining.taska.model.TaskADtos;
+import com.bjtu.dining.taska.service.SimulationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -54,15 +58,18 @@ public class RecommendationService {
     private final CsvSeedRepository seedRepository;
     private final SimulationProvider simulationProvider;
     private final RecommendationStore recommendationStore;
+    private final SimulationService taskASimulationService;
 
     public RecommendationService(
             CsvSeedRepository seedRepository,
             SimulationProvider simulationProvider,
-            RecommendationStore recommendationStore
+            RecommendationStore recommendationStore,
+            SimulationService taskASimulationService
     ) {
         this.seedRepository = seedRepository;
         this.simulationProvider = simulationProvider;
         this.recommendationStore = recommendationStore;
+        this.taskASimulationService = taskASimulationService;
     }
 
     public RecommendationResult generate(RecommendationGenerateRequest request) {
@@ -190,6 +197,71 @@ public class RecommendationService {
         return new DiversionResult(request.runId(), timePoint.minute(), suggestions, reason);
     }
 
+    public DiversionComparisonResult runDiversionComparison(DiversionComparisonRequest request) {
+        TaskADtos.SimulationRunResult baseRun = loadFinishedTaskARun(request.baseRunId(), "无法执行分流对比");
+        int resolvedMinute = request.minute() != null
+                ? request.minute()
+                : resolvePeakMinute(mapSimulation(baseRun));
+        String targetCrowdLevel = validateCrowdLevel(defaultCrowdLevel(request.targetCrowdLevel()));
+        DiversionResult diversionResult = generateDiversion(new DiversionRequest(
+                request.baseRunId(),
+                resolvedMinute,
+                targetCrowdLevel,
+                toUserProfileRequest(baseRun.profile())
+        ));
+
+        EvaluationMetrics baseMetrics = mapMetrics(baseRun.metrics());
+        boolean autoRunCompare = request.autoRunCompare() == null || request.autoRunCompare();
+        if (diversionResult.suggestions().isEmpty()) {
+            return new DiversionComparisonResult(
+                    request.baseRunId(),
+                    null,
+                    resolvedMinute,
+                    diversionResult,
+                    null,
+                    baseMetrics,
+                    null,
+                    "NO_SUGGESTION"
+            );
+        }
+        if (!autoRunCompare) {
+            return new DiversionComparisonResult(
+                    request.baseRunId(),
+                    null,
+                    resolvedMinute,
+                    diversionResult,
+                    null,
+                    baseMetrics,
+                    null,
+                    "READY"
+            );
+        }
+
+        TaskADtos.SimulationRunResult compareRun = taskASimulationService.runSimulationWithDiversion(
+                new TaskADtos.SimulationRunWithDiversionRequest(
+                        request.baseRunId(),
+                        resolvedMinute,
+                        targetCrowdLevel,
+                        diversionResult.suggestions().stream().map(this::toTaskADiversionSuggestion).toList()
+                )
+        );
+        StrategyComparisonResult comparison = compareStrategies(new StrategyCompareRequest(
+                request.baseRunId(),
+                compareRun.runId(),
+                "DIVERSION_AFTER"
+        ));
+        return new DiversionComparisonResult(
+                request.baseRunId(),
+                compareRun.runId(),
+                resolvedMinute,
+                diversionResult,
+                comparison,
+                baseMetrics,
+                mapMetrics(compareRun.metrics()),
+                "COMPLETED"
+        );
+    }
+
     public StrategyComparisonResult compareStrategies(StrategyCompareRequest request) {
         String compareType = resolveCompareType(request.compareType());
         SimulationRunResult baseSimulation = loadFinishedSimulation(request.baseRunId(), "无法比较策略");
@@ -201,7 +273,7 @@ public class RecommendationService {
         }
 
         double avgWaitDelta = roundOne(compareMetrics.avgWaitMinutes() - baseMetrics.avgWaitMinutes());
-        int maxWaitDelta = compareMetrics.maxWaitMinutes() - baseMetrics.maxWaitMinutes();
+        double maxWaitDelta = roundOne(compareMetrics.maxWaitMinutes() - baseMetrics.maxWaitMinutes());
         int maxQueueDelta = compareMetrics.maxQueueLength() - baseMetrics.maxQueueLength();
         int busyWindowCountDelta = compareMetrics.busyWindowCount() - baseMetrics.busyWindowCount();
         int extremeWindowCountDelta = compareMetrics.extremeWindowCount() - baseMetrics.extremeWindowCount();
@@ -386,9 +458,7 @@ public class RecommendationService {
 
     private SimulationTimePoint selectTimePoint(SimulationRunResult simulation, Integer minute) {
         if (minute == null) {
-            return simulation.timePoints().stream()
-                    .max(Comparator.comparing(SimulationTimePoint::minute))
-                    .orElseThrow(() -> new ApiException(40401, "仿真运行记录不存在", HttpStatus.NOT_FOUND));
+            return resolvePeakTimePoint(simulation);
         }
         if (minute < 0) {
             throw new ApiException(40001, "参数校验失败", HttpStatus.BAD_REQUEST,
@@ -413,56 +483,194 @@ public class RecommendationService {
         return simulation;
     }
 
+    private TaskADtos.SimulationRunResult loadFinishedTaskARun(Long runId, String operationText) {
+        try {
+            TaskADtos.SimulationRunResult simulation = taskASimulationService.getRunResult(runId);
+            if (!"FINISHED".equals(simulation.status())) {
+                throw new ApiException(40901, "仿真尚未完成，" + operationText, HttpStatus.CONFLICT);
+            }
+            return simulation;
+        } catch (RuntimeException ex) {
+            if (ex instanceof ApiException) {
+                throw ex;
+            }
+            throw new ApiException(40401, "仿真运行记录不存在", HttpStatus.NOT_FOUND);
+        }
+    }
+
+    private SimulationTimePoint resolvePeakTimePoint(SimulationRunResult simulation) {
+        return simulation.timePoints().stream()
+                .max(Comparator
+                        .comparingInt(this::totalQueueLength)
+                        .thenComparingInt(this::totalCurrentCount)
+                        .thenComparingInt(SimulationTimePoint::minute))
+                .orElseThrow(() -> new ApiException(40401, "仿真运行记录不存在", HttpStatus.NOT_FOUND));
+    }
+
+    private int resolvePeakMinute(SimulationRunResult simulation) {
+        return resolvePeakTimePoint(simulation).minute();
+    }
+
+    private int totalQueueLength(SimulationTimePoint timePoint) {
+        return timePoint.restaurants().stream()
+                .flatMap(restaurant -> restaurant.windows().stream())
+                .mapToInt(WindowSnapshot::queueLength)
+                .sum();
+    }
+
+    private int totalCurrentCount(SimulationTimePoint timePoint) {
+        return timePoint.restaurants().stream()
+                .mapToInt(RestaurantSnapshot::currentCount)
+                .sum();
+    }
+
+    private SimulationRunResult mapSimulation(TaskADtos.SimulationRunResult source) {
+        return new SimulationRunResult(
+                source.runId(),
+                source.status(),
+                source.timePoints().stream().map(this::mapTimePoint).toList(),
+                mapMetrics(source.metrics()),
+                parseCreatedAt(source.createdAt())
+        );
+    }
+
+    private SimulationTimePoint mapTimePoint(TaskADtos.SimulationTimePoint source) {
+        return new SimulationTimePoint(
+                source.minute(),
+                source.restaurants().stream().map(this::mapRestaurant).toList()
+        );
+    }
+
+    private RestaurantSnapshot mapRestaurant(TaskADtos.RestaurantTimePoint source) {
+        return new RestaurantSnapshot(
+                source.restaurantId(),
+                source.name(),
+                source.currentCount(),
+                source.capacity(),
+                source.crowdLevel(),
+                source.windows().stream().map(this::mapWindow).toList()
+        );
+    }
+
+    private WindowSnapshot mapWindow(TaskADtos.QueueState source) {
+        return new WindowSnapshot(
+                source.windowId(),
+                source.name(),
+                source.queueLength(),
+                source.servingCount(),
+                (int) Math.round(source.waitMinutes()),
+                source.crowdLevel(),
+                source.status()
+        );
+    }
+
+    private EvaluationMetrics mapMetrics(TaskADtos.EvaluationMetrics source) {
+        return new EvaluationMetrics(
+                source.avgWaitMinutes(),
+                source.maxWaitMinutes(),
+                source.maxQueueLength(),
+                source.busyWindowCount(),
+                source.extremeWindowCount(),
+                source.totalVirtualUsers(),
+                source.servedUserCount(),
+                source.unservedUserCount()
+        );
+    }
+
+    private OffsetDateTime parseCreatedAt(String createdAt) {
+        try {
+            return OffsetDateTime.parse(createdAt);
+        } catch (RuntimeException ignored) {
+            return OffsetDateTime.now();
+        }
+    }
+
+    private UserProfileRequest toUserProfileRequest(TaskADtos.UserProfile profile) {
+        return new UserProfileRequest(
+                profile.userType(),
+                profile.tasteTags(),
+                profile.budgetMin(),
+                profile.budgetMax(),
+                profile.waitingToleranceMinutes()
+        );
+    }
+
+    private TaskADtos.DiversionSuggestion toTaskADiversionSuggestion(DiversionSuggestionItem item) {
+        return new TaskADtos.DiversionSuggestion(
+                item.fromRestaurantId(),
+                item.fromWindowId(),
+                item.toRestaurantId(),
+                item.toWindowId(),
+                item.suggestedUserCount(),
+                item.acceptanceRate(),
+                item.estimatedAcceptedCount()
+        );
+    }
+
+    private String defaultCrowdLevel(String crowdLevel) {
+        if (crowdLevel == null || crowdLevel.isBlank()) {
+            return "NORMAL";
+        }
+        return crowdLevel;
+    }
+
     private String buildComparisonConclusion(
             String compareType,
             double avgWaitDelta,
-            int maxWaitDelta,
+            double maxWaitDelta,
             int maxQueueDelta,
             int busyWindowCountDelta,
             int extremeWindowCountDelta,
             int servedUserCountDelta,
             int unservedUserCountDelta
     ) {
-        List<String> parts = new ArrayList<>();
-        parts.add(compareTypePrefix(compareType) + "平均等待时间" + deltaText(avgWaitDelta, "分钟"));
-        parts.add("最大等待时间" + deltaText(maxWaitDelta, "分钟"));
-        parts.add("最大排队长度" + deltaText(maxQueueDelta, "人"));
-        parts.add("拥挤窗口数量" + deltaText(busyWindowCountDelta, "个"));
-        parts.add("极端拥挤窗口数量" + deltaText(extremeWindowCountDelta, "个"));
-        parts.add("已服务人数" + deltaText(servedUserCountDelta, "人"));
-        parts.add("未服务人数" + deltaText(unservedUserCountDelta, "人"));
-
         int score = 0;
         score += avgWaitDelta < 0 ? 2 : avgWaitDelta > 0 ? -2 : 0;
         score += maxWaitDelta < 0 ? 1 : maxWaitDelta > 0 ? -1 : 0;
-        score += maxQueueDelta < 0 ? 1 : maxQueueDelta > 0 ? -1 : 0;
+        score += maxQueueDelta < 0 ? 2 : maxQueueDelta > 0 ? -2 : 0;
         score += busyWindowCountDelta < 0 ? 1 : busyWindowCountDelta > 0 ? -1 : 0;
-        score += extremeWindowCountDelta < 0 ? 1 : extremeWindowCountDelta > 0 ? -1 : 0;
+        score += extremeWindowCountDelta < 0 ? 2 : extremeWindowCountDelta > 0 ? -2 : 0;
         score += servedUserCountDelta > 0 ? 1 : servedUserCountDelta < 0 ? -1 : 0;
-        score += unservedUserCountDelta < 0 ? 1 : unservedUserCountDelta > 0 ? -1 : 0;
+        score += unservedUserCountDelta < 0 ? 2 : unservedUserCountDelta > 0 ? -2 : 0;
 
-        String summary;
-        if (score >= 4) {
-            summary = "整体策略效果较好。";
-        } else if (score <= -4) {
-            summary = "当前策略带来的压力偏高，建议调整推荐权重或分流目标。";
-        } else {
-            summary = "整体效果变化不明显，可结合具体窗口排队情况继续观察。";
+        StringBuilder builder = new StringBuilder();
+        builder.append(compareTypePrefix(compareType))
+                .append("平均等待时长")
+                .append(deltaText(avgWaitDelta, "分钟"))
+                .append("，最大排队长度")
+                .append(deltaText(maxQueueDelta, "人"));
+        if (Math.abs(maxWaitDelta) > 0) {
+            builder.append("，最大等待时长").append(deltaText(maxWaitDelta, "分钟"));
         }
-        return String.join("，", parts) + "，" + summary;
+        if (busyWindowCountDelta != 0 || extremeWindowCountDelta != 0) {
+            builder.append("，忙碌窗口数").append(deltaText(busyWindowCountDelta, "个"))
+                    .append("，极端拥挤窗口数").append(deltaText(extremeWindowCountDelta, "个"));
+        }
+        if (servedUserCountDelta != 0 || unservedUserCountDelta != 0) {
+            builder.append("，已服务人数").append(deltaText(servedUserCountDelta, "人"))
+                    .append("，未服务人数").append(deltaText(unservedUserCountDelta, "人"));
+        }
+        if (score >= 3) {
+            builder.append("，说明分流策略能够缓解高峰窗口排队压力。");
+        } else if (score <= -3) {
+            builder.append("，本轮分流策略效果不佳，建议调整分流目标或窗口配置。");
+        } else {
+            builder.append("，本轮分流策略改善有限，建议继续观察目标窗口的承接能力。");
+        }
+        return builder.toString();
     }
 
     private String compareTypePrefix(String compareType) {
         return switch (compareType) {
-            case "RECOMMENDATION_AFTER" -> "应用推荐引导后";
-            case "DIVERSION_AFTER" -> "应用分流策略后";
-            default -> "对比场景";
+            case "RECOMMENDATION_AFTER" -> "执行推荐引导后，";
+            case "DIVERSION_AFTER" -> "执行分流建议后，";
+            default -> "对比结果显示，";
         };
     }
 
     private String deltaText(double delta, String unit) {
         if (delta < 0) {
-            return "降低 " + formatDelta(Math.abs(delta)) + " " + unit;
+            return "下降 " + formatDelta(Math.abs(delta)) + " " + unit;
         }
         if (delta > 0) {
             return "增加 " + formatDelta(delta) + " " + unit;

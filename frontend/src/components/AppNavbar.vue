@@ -53,7 +53,7 @@ const route = useRoute()
 
 const navItems = [
   { to: '/', label: '首页', icon: HomeFilled },
-  { to: '/flow', label: '实时人流', icon: UserFilled },
+  { to: '/flow', label: '人流快照', icon: UserFilled },
   { to: '/config', label: '参数配置', icon: Setting },
   { to: '/statistics', label: '统计分析', icon: Histogram },
   { to: '/recommendation', label: '推荐结果', icon: DataAnalysis },

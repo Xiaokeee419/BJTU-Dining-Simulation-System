@@ -28,29 +28,29 @@
         <div class="feature-grid">
           <FeatureEntryCard
             :icon="UserFilled"
-            title="实时人流"
-            description="查看食堂实时人流分布、标签画像与区域热度变化。"
+            title="仿真人流快照"
+            description="查看高峰分钟的餐厅负载、排队窗口和容量负载情况。"
             tone="primary"
             @open="router.push('/flow')"
           />
           <FeatureEntryCard
             :icon="Setting"
             title="参数配置"
-            description="设置仿真模型参数、管理画像配置与运营策略。"
+            description="调整仿真场景、用户画像和运营策略并重新运行仿真。"
             tone="teal"
             @open="router.push('/config')"
           />
           <FeatureEntryCard
             :icon="Histogram"
             title="统计分析"
-            description="分析仿真结果与趋势数据，生成多维度统计视图。"
+            description="查看 timePoints 与 metrics 生成的趋势图和负载统计。"
             tone="cyan"
             @open="router.push('/statistics')"
           />
           <FeatureEntryCard
             :icon="DataAnalysis"
             title="推荐结果"
-            description="基于仿真结果输出优化建议与下一轮决策方案。"
+            description="查看推荐分数、理由、等待时长和分流建议明细。"
             tone="primary"
             @open="router.push('/recommendation')"
           />
@@ -67,7 +67,7 @@
     <section class="card-grid-4">
       <StatCard
         :icon="UserFilled"
-        label="当前就餐人数"
+        label="峰值负载人数"
         :value="overview.currentPeople"
         unit="人"
         :caption="overview.peopleCaption"
@@ -86,7 +86,7 @@
       />
       <StatCard
         :icon="OfficeBuilding"
-        label="座位利用率"
+        label="容量负载率"
         :value="overview.seatUtilization"
         unit="%"
         :caption="overview.seatCaption"
@@ -159,10 +159,10 @@ const overview = computed(() => {
     openWindows,
     peopleCaption: peakMinute != null ? `高峰快照 ${peakMinute} 分钟` : '请先运行仿真',
     peopleNote: Number.isFinite(totalVirtualUsers) ? `仿真样本 ${totalVirtualUsers} 人` : '',
-    waitCaption: '本次仿真',
+    waitCaption: '当前仿真',
     waitNote: Number.isFinite(servedUserCount) ? `已服务 ${servedUserCount} 人` : '',
     seatCaption: peakMinute != null ? `高峰快照 ${peakMinute} 分钟` : '请先运行仿真',
-    seatNote: seatCapacity ? `总座位 ${seatCapacity} 个` : '',
+    seatNote: seatCapacity ? `总容量 ${seatCapacity}` : '',
     windowCaption: '开放 / 总数',
     windowNote: totalWindows ? `${openWindows} / ${totalWindows}` : '',
   }
