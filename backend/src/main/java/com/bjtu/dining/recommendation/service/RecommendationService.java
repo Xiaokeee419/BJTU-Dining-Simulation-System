@@ -1,6 +1,7 @@
 package com.bjtu.dining.recommendation.service;
 
 import com.bjtu.dining.common.ApiException;
+import com.bjtu.dining.common.ResourceNotFoundException;
 import com.bjtu.dining.recommendation.dto.DiversionComparisonRequest;
 import com.bjtu.dining.recommendation.dto.DiversionComparisonResult;
 import com.bjtu.dining.recommendation.dto.DiversionRequest;
@@ -24,6 +25,8 @@ import com.bjtu.dining.recommendation.repository.CsvSeedRepository;
 import com.bjtu.dining.recommendation.repository.RecommendationStore;
 import com.bjtu.dining.taska.model.TaskADtos;
 import com.bjtu.dining.taska.service.SimulationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -42,6 +45,8 @@ import java.util.Set;
 
 @Service
 public class RecommendationService {
+
+    private static final Logger log = LoggerFactory.getLogger(RecommendationService.class);
 
     private static final int DEFAULT_LIMIT = 3;
     private static final int MAX_LIMIT = 10;
@@ -490,11 +495,13 @@ public class RecommendationService {
                 throw new ApiException(40901, "仿真尚未完成，" + operationText, HttpStatus.CONFLICT);
             }
             return simulation;
-        } catch (RuntimeException ex) {
-            if (ex instanceof ApiException) {
-                throw ex;
-            }
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (ResourceNotFoundException ex) {
             throw new ApiException(40401, "仿真运行记录不存在", HttpStatus.NOT_FOUND);
+        } catch (RuntimeException ex) {
+            log.error("加载 Task A 仿真结果失败, runId={}, operation={}", runId, operationText, ex);
+            throw new ApiException(50001, "加载仿真结果失败，请检查后端日志", HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -633,27 +640,44 @@ public class RecommendationService {
         score += servedUserCountDelta > 0 ? 1 : servedUserCountDelta < 0 ? -1 : 0;
         score += unservedUserCountDelta < 0 ? 2 : unservedUserCountDelta > 0 ? -2 : 0;
 
-        StringBuilder builder = new StringBuilder();
-        builder.append(compareTypePrefix(compareType))
-                .append("平均等待时长")
-                .append(deltaText(avgWaitDelta, "分钟"))
-                .append("，最大排队长度")
-                .append(deltaText(maxQueueDelta, "人"));
+        boolean queuePressureImproved = maxQueueDelta < 0
+                || busyWindowCountDelta < 0
+                || extremeWindowCountDelta < 0
+                || unservedUserCountDelta < 0;
+        boolean queuePressureWorsened = maxQueueDelta > 0
+                || busyWindowCountDelta > 0
+                || extremeWindowCountDelta > 0
+                || unservedUserCountDelta > 0;
+        boolean waitImproved = avgWaitDelta < 0 || maxWaitDelta < 0;
+        boolean waitWorsened = avgWaitDelta > 0 || maxWaitDelta > 0;
+
+        StringBuilder builder = new StringBuilder(compareTypePrefix(compareType))
+                .append("最大排队长度")
+                .append(deltaText(maxQueueDelta, "人"))
+                .append("，忙碌窗口数")
+                .append(deltaText(busyWindowCountDelta, "个"))
+                .append("，极端拥挤窗口数")
+                .append(deltaText(extremeWindowCountDelta, "个"))
+                .append("，未服务人数")
+                .append(deltaText(unservedUserCountDelta, "人"))
+                .append("，平均预计等待")
+                .append(deltaText(avgWaitDelta, "分钟"));
+
         if (Math.abs(maxWaitDelta) > 0) {
-            builder.append("，最大等待时长").append(deltaText(maxWaitDelta, "分钟"));
+            builder.append("，最大预计等待").append(deltaText(maxWaitDelta, "分钟"));
         }
-        if (busyWindowCountDelta != 0 || extremeWindowCountDelta != 0) {
-            builder.append("，忙碌窗口数").append(deltaText(busyWindowCountDelta, "个"))
-                    .append("，极端拥挤窗口数").append(deltaText(extremeWindowCountDelta, "个"));
+        if (servedUserCountDelta != 0) {
+            builder.append("，已服务人数").append(deltaText(servedUserCountDelta, "人"));
         }
-        if (servedUserCountDelta != 0 || unservedUserCountDelta != 0) {
-            builder.append("，已服务人数").append(deltaText(servedUserCountDelta, "人"))
-                    .append("，未服务人数").append(deltaText(unservedUserCountDelta, "人"));
-        }
-        if (score >= 3) {
-            builder.append("，说明分流策略能够缓解高峰窗口排队压力。");
-        } else if (score <= -3) {
-            builder.append("，本轮分流策略效果不佳，建议调整分流目标或窗口配置。");
+
+        if (queuePressureImproved && waitImproved) {
+            builder.append("，说明分流策略同时缓解了高峰排队压力，并带来了预计等待改善。");
+        } else if (queuePressureImproved) {
+            builder.append("，分流策略主要改善了高峰队列压力和窗口拥挤程度，平均预计等待改善有限。");
+        } else if (waitImproved && !queuePressureWorsened) {
+            builder.append("，平均预计等待有所改善，但高峰队列压力缓解有限，建议继续观察目标窗口的承接能力。");
+        } else if (score <= -3 || queuePressureWorsened || waitWorsened) {
+            builder.append("，本轮分流策略改善不明显，可能需要调整分流目标或窗口配置。");
         } else {
             builder.append("，本轮分流策略改善有限，建议继续观察目标窗口的承接能力。");
         }

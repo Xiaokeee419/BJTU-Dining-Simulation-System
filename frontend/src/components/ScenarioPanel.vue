@@ -1,7 +1,10 @@
 <template>
   <section class="panel scenario-panel">
     <div class="panel-header">
-      <h2 class="panel-title">场景参数</h2>
+      <div>
+        <h2 class="panel-title">场景参数</h2>
+        <p class="panel-subtitle">这些参数决定 baseline 仿真的场景压力和采样规模。</p>
+      </div>
       <el-select
         :model-value="selectedScenarioId"
         size="small"
@@ -16,6 +19,7 @@
         />
       </el-select>
     </div>
+
     <div class="panel-body">
       <el-form label-position="top">
         <el-form-item label="就餐时段">
@@ -25,6 +29,7 @@
             @update:model-value="updateField('mealPeriod', $event)"
           />
         </el-form-item>
+
         <el-form-item label="日期类型">
           <el-segmented
             :model-value="modelValue.dayType"
@@ -32,28 +37,17 @@
             @update:model-value="updateField('dayType', $event)"
           />
         </el-form-item>
+
         <el-form-item label="拥挤等级">
           <el-segmented
             :model-value="modelValue.crowdLevel"
             :options="crowdOptions"
             @update:model-value="updateField('crowdLevel', $event)"
           />
-          <p class="field-help" :class="demandHint.level">
-            {{ demandHint.text }}
-          </p>
+          <p class="field-help">{{ demandHint }}</p>
         </el-form-item>
-        <el-form-item>
-          <template #label>
-            <div class="field-label">
-              <span>参与仿真的就餐人数</span>
-              <el-tooltip
-                content="表示当前场景时间窗口内进入仿真的就餐样本量，不是全校总人数。"
-                placement="top"
-              >
-                <span class="label-tip">?</span>
-              </el-tooltip>
-            </div>
-          </template>
+
+        <el-form-item label="虚拟就餐人数">
           <el-slider
             :model-value="modelValue.virtualUserCount"
             :min="100"
@@ -62,37 +56,31 @@
             show-input
             @update:model-value="updateField('virtualUserCount', $event)"
           />
-          <p class="field-help">
-            建议按单个就餐时段估算需求规模：早餐 200-400，晚餐 500-700，午餐高峰 800-1200。
-          </p>
         </el-form-item>
-        <el-form-item label="影响系数">
-          <div class="factor-row">
-            <span>天气</span>
-            <el-input-number
-              :model-value="modelValue.weatherFactor"
-              :min="0.6"
-              :max="1.6"
-              :step="0.05"
-              controls-position="right"
-              @update:model-value="updateField('weatherFactor', $event)"
-            />
-          </div>
-          <div class="factor-row">
-            <span>活动</span>
-            <el-input-number
-              :model-value="modelValue.eventFactor"
-              :min="0.6"
-              :max="1.6"
-              :step="0.05"
-              controls-position="right"
-              @update:model-value="updateField('eventFactor', $event)"
-            />
-          </div>
-          <p class="field-help">
-            {{ factorHint }}
-          </p>
+
+        <el-form-item label="天气因子">
+          <el-input-number
+            :model-value="modelValue.weatherFactor"
+            :min="0.6"
+            :max="1.6"
+            :step="0.05"
+            controls-position="right"
+            @update:model-value="updateField('weatherFactor', $event)"
+          />
         </el-form-item>
+
+        <el-form-item label="活动因子">
+          <el-input-number
+            :model-value="modelValue.eventFactor"
+            :min="0.6"
+            :max="1.6"
+            :step="0.05"
+            controls-position="right"
+            @update:model-value="updateField('eventFactor', $event)"
+          />
+          <p class="field-help">{{ factorHint }}</p>
+        </el-form-item>
+
         <el-form-item label="关闭窗口">
           <el-select
             :model-value="modelValue.closedWindowIds"
@@ -108,10 +96,27 @@
               :value="window.windowId"
             />
           </el-select>
-          <p class="field-help">
-            关闭窗口会直接影响服务能力，适合模拟窗口停业、设备故障或临时调度不足的情况。
-          </p>
         </el-form-item>
+
+        <div class="time-grid">
+          <el-form-item label="仿真时长">
+            <el-select
+              :model-value="modelValue.durationMinutes"
+              @update:model-value="updateDurationMinutes"
+            >
+              <el-option v-for="item in durationOptions" :key="item" :label="`${item} 分钟`" :value="item" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="时间粒度">
+            <el-select
+              :model-value="modelValue.stepMinutes"
+              @update:model-value="updateStepMinutes"
+            >
+              <el-option v-for="item in stepOptions" :key="item" :label="`${item} 分钟`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
       </el-form>
     </div>
   </section>
@@ -146,51 +151,37 @@ const mealOptions = [
   { label: '午餐', value: 'LUNCH' },
   { label: '晚餐', value: 'DINNER' },
 ]
+
 const dayOptions = [
   { label: '工作日', value: 'WEEKDAY' },
   { label: '周末', value: 'WEEKEND' },
 ]
+
 const crowdOptions = [
   { label: '空闲', value: 'IDLE' },
   { label: '正常', value: 'NORMAL' },
   { label: '繁忙', value: 'BUSY' },
-  { label: '极拥挤', value: 'EXTREME' },
+  { label: '极端拥挤', value: 'EXTREME' },
 ]
 
-const demandHint = computed(() => {
-  const count = Number(props.modelValue.virtualUserCount || 0)
-  const crowdLevel = props.modelValue.crowdLevel
-  const mealPeriod = props.modelValue.mealPeriod
+const durationOptions = [60, 90, 120, 150]
+const stepOptions = [5, 10, 15]
 
-  if (crowdLevel === 'EXTREME' && count < 1000) {
-    return {
-      level: 'warning',
-      text: '当前选择了极拥挤，但仿真人数偏低，结果可能体现不出明显排队压力。',
-    }
+const demandHint = computed(() => {
+  const crowdLevel = props.modelValue.crowdLevel
+  const dinerCount = Number(props.modelValue.virtualUserCount || 0)
+  if (crowdLevel === 'EXTREME' && dinerCount < 1000) {
+    return '当前设为极端拥挤，但虚拟就餐人数偏低，可能不容易形成明显排队压力。'
   }
-  if (crowdLevel === 'IDLE' && count > 900) {
-    return {
-      level: 'warning',
-      text: '当前人数较高但拥挤等级为空闲，建议调低人数或改为正常/繁忙以保持场景一致。',
-    }
+  if (crowdLevel === 'IDLE' && dinerCount > 900) {
+    return '当前虚拟就餐人数较高，建议将拥挤等级调到正常或繁忙以保持场景一致。'
   }
-  if (mealPeriod === 'LUNCH' && count < 600) {
-    return {
-      level: 'notice',
-      text: '午餐高峰通常建议使用更高样本量，便于观察排队和推荐差异。',
-    }
-  }
-  return {
-    level: 'notice',
-    text: '拥挤等级会影响用户到达集中程度，仿真人数决定本次场景的样本规模。',
-  }
+  return '拥挤等级会影响到达集中程度，虚拟就餐人数决定本轮仿真的样本规模。'
 })
 
 const factorHint = computed(() => {
-  const weather = Number(props.modelValue.weatherFactor || 1)
-  const event = Number(props.modelValue.eventFactor || 1)
-  const pressure = Math.round(weather * event * 100) / 100
-  return `1.0 表示正常客流；大于 1 表示客流放大，小于 1 表示客流减弱。当前综合压力约为 ${pressure} 倍。`
+  const pressure = Number(props.modelValue.weatherFactor || 1) * Number(props.modelValue.eventFactor || 1)
+  return `1.0 表示常态客流；当前天气与活动因子的综合压力约为 ${pressure.toFixed(2)} 倍。`
 })
 
 function updateField(key, value) {
@@ -200,9 +191,32 @@ function updateField(key, value) {
   })
 }
 
+function updateDurationMinutes(value) {
+  const durationMinutes = normalizeDuration(Number(value || 60), Number(props.modelValue.stepMinutes || 5))
+  emit('update:modelValue', {
+    ...props.modelValue,
+    durationMinutes,
+  })
+}
+
+function updateStepMinutes(value) {
+  const stepMinutes = Number(value || 5)
+  emit('update:modelValue', {
+    ...props.modelValue,
+    stepMinutes,
+    durationMinutes: normalizeDuration(Number(props.modelValue.durationMinutes || 60), stepMinutes),
+  })
+}
+
+function normalizeDuration(durationMinutes, stepMinutes) {
+  const safeStep = Math.max(1, stepMinutes)
+  const rounded = Math.max(safeStep, Math.round(durationMinutes / safeStep) * safeStep)
+  return rounded
+}
+
 function windowOptionLabel(window) {
   const restaurantText = window.restaurantName || `餐厅 ${window.restaurantId}`
-  return `${restaurantText} · ${window.name}`
+  return `${restaurantText} / ${window.name}`
 }
 </script>
 
@@ -211,61 +225,22 @@ function windowOptionLabel(window) {
   width: 190px;
 }
 
-.field-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.label-tip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #eef2f7;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: help;
+.time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .field-help {
   margin: 8px 0 0;
   color: #64748b;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-.field-help.warning {
-  color: #b45309;
-}
-
-.field-help.notice {
-  color: #64748b;
-}
-
-.factor-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 12px;
-  margin-bottom: 10px;
-  padding: 8px 10px;
-  border: 1px solid #e8edf4;
-  border-radius: 8px;
-  background: #fbfcfe;
-}
-
-.factor-row span {
-  color: #4b5565;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.factor-row:last-child {
-  margin-bottom: 0;
+@media (max-width: 760px) {
+  .time-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

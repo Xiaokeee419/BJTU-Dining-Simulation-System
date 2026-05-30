@@ -3,19 +3,21 @@
     <PageHeader
       eyebrow="人流快照"
       title="仿真人流快照"
-      description="本页仅展示仿真返回的 timePoint 快照，不再假设人员明细、标签画像或真实平面热力图。默认展示高峰分钟。"
+      description="本页基于仿真 timePoint 快照展示各餐厅窗口排队与服务压力。负载人数由窗口排队人数和服务中人数汇总得到，不代表实际座位占用人数。"
     >
       <template #actions>
-        <span class="status-badge">高峰分钟：{{ snapshot?.minute ?? '--' }}</span>
-        <el-button plain @click="handleRefresh">重新运行仿真</el-button>
+        <span v-if="snapshot" class="status-badge">高峰快照第 {{ snapshot.minute }} 分钟</span>
+        <el-button plain @click="router.push('/config')">前往参数配置</el-button>
       </template>
     </PageHeader>
 
-    <EmptyState
-      v-if="!snapshot"
-      title="请先运行仿真"
-      description="当前没有可用于展示快照的数据。运行仿真后，这里会展示高峰分钟的餐厅负载、窗口排队和容量负载情况。"
-    />
+    <section v-if="!snapshot" class="empty-shell">
+      <EmptyState
+        title="暂无可查看的人流快照"
+        description="请先到参数配置页运行一次未分流仿真，再返回本页查看高峰排队与服务压力。"
+      />
+      <el-button type="primary" @click="router.push('/config')">前往参数配置</el-button>
+    </section>
 
     <template v-else>
       <section class="card-grid-4">
@@ -24,17 +26,17 @@
           label="快照分钟"
           :value="snapshot.minute"
           unit="分钟"
-          caption="默认高峰时间点"
-          :delta="snapshot.minuteLabel"
+          caption="默认高峰快照"
+          :delta="snapshot.createdAtLabel"
           delta-state="neutral"
         />
         <StatCard
           :icon="UserFilled"
-          label="峰值负载人数"
+          label="高峰负载人数"
           :value="snapshot.loadCount"
           unit="人"
-          caption="timePoint.currentCount 聚合"
-          :delta="snapshot.sampleNote"
+          caption="排队/服务负载"
+          :delta="snapshot.loadNote"
           delta-state="neutral"
         />
         <StatCard
@@ -62,101 +64,108 @@
       <section class="section-grid">
         <div class="restaurant-zone">
           <SectionCard
-            title="餐厅负载快照"  
-            subtitle="按餐厅展示 currentCount、queueLength、服务人数和容量负载率。这里的负载人数来自 A 的 currentCount 聚合，不表示真实在座人数。"
+            title="Top 5 排队压力最高餐厅"
+            subtitle="按平均窗口等待、总排队人数和负载人数排序，优先展示最需要关注的餐厅。"
           >
-            <div class="restaurant-grid">
+            <div class="restaurant-list">
               <article
-                v-for="restaurant in snapshot.restaurants"
+                v-for="restaurant in snapshot.topRestaurants"
                 :key="restaurant.restaurantId"
                 class="restaurant-card"
               >
                 <div class="restaurant-head">
-                  <strong>{{ restaurant.name }}</strong>
-                  <span class="crowd-chip" :class="crowdClass(restaurant.crowdLevel)">
-                    {{ crowdLabel(restaurant.crowdLevel) }}
+                  <div>
+                    <strong>{{ restaurant.name }}</strong>
+                    <span class="restaurant-sub">{{ restaurant.pressureLabel }}排队压力</span>
+                  </div>
+                  <span class="pressure-chip" :class="`pressure-${restaurant.pressureTone}`">
+                    {{ restaurant.pressureLabel }}
                   </span>
                 </div>
                 <div class="restaurant-metrics">
-                  <div>
-                    <span>负载人数</span>
-                    <strong>{{ restaurant.currentCount }}</strong>
-                  </div>
-                  <div>
-                    <span>排队人数</span>
-                    <strong>{{ restaurant.queueTotal }}</strong>
-                  </div>
-                  <div>
-                    <span>服务中</span>
-                    <strong>{{ restaurant.servingTotal }}</strong>
-                  </div>
-                  <div>
-                    <span>开放窗口</span>
-                    <strong>{{ restaurant.openWindows }} / {{ restaurant.totalWindows }}</strong>
-                  </div>
-                </div>
-                <div class="restaurant-foot">
-                  <span>容量负载率 {{ restaurant.loadRate }}%</span>
-                  <span>平均等待 {{ restaurant.avgWait }} 分钟</span>
+                  <span>排队/服务负载 {{ restaurant.currentCount }} 人</span>
+                  <span>排队人数 {{ restaurant.queueTotal }} 人</span>
+                  <span>平均窗口等待 {{ restaurant.avgWait }} 分钟</span>
+                  <span>开放窗口 {{ restaurant.openWindows }} / {{ restaurant.totalWindows }}</span>
                 </div>
               </article>
             </div>
           </SectionCard>
         </div>
 
-        <div class="crowd-zone">
-          <ChartCard
-            title="窗口拥挤等级分布"
-            subtitle="统计当前快照下 IDLE、NORMAL、BUSY、EXTREME 四类窗口数量。"
-            :empty="!snapshot.crowdBuckets.some((item) => item.value > 0)"
-            empty-title="当前没有窗口快照"
-            empty-description="请先运行仿真后再查看当前分钟窗口拥挤等级分布。"
+        <div class="window-zone">
+          <SectionCard
+            title="Top 5 等待时间最高窗口"
+            subtitle="按等待时长和排队人数排序，优先展示最拥挤的窗口。"
           >
-            <div ref="crowdChartRef" class="chart-surface"></div>
-          </ChartCard>
+            <div class="window-list">
+              <article v-for="window in snapshot.topWindows" :key="window.windowId" class="window-item">
+                <div class="window-head">
+                  <div>
+                    <strong>{{ window.name }}</strong>
+                    <span class="window-sub">{{ window.restaurantName }}</span>
+                  </div>
+                  <span class="crowd-chip" :class="`crowd-${window.crowdTone}`">
+                    {{ window.crowdLabel }}
+                  </span>
+                </div>
+                <div class="window-metrics">
+                  <span>queueLength {{ window.queueLength }}</span>
+                  <span>waitMinutes {{ window.waitMinutes }}</span>
+                  <span>{{ window.crowdLevel }}</span>
+                  <span>{{ window.status }}</span>
+                </div>
+              </article>
+            </div>
+          </SectionCard>
         </div>
       </section>
 
       <section class="section-grid">
-        <div class="trend-zone">
+        <div class="distribution-zone">
           <ChartCard
-            title="负载变化趋势"
-            subtitle="展示整轮仿真中负载人数、排队人数和服务中人数的时间变化。"
-            :empty="!snapshot.trend.length"
+            title="窗口拥挤等级分布"
+            subtitle="统计当前高峰快照中各拥挤等级窗口数量。"
+            :empty="!snapshot.crowdBuckets.some((item) => item.value > 0)"
+            empty-title="当前没有窗口快照"
+            empty-description="请先运行仿真后再查看高峰快照的窗口拥挤分布。"
           >
-            <div ref="flowTrendRef" class="chart-surface"></div>
+            <div ref="crowdChartRef" class="chart-surface"></div>
           </ChartCard>
         </div>
 
-        <div class="window-zone">
+        <div class="all-zone">
           <SectionCard
-            title="高压窗口列表"
-            subtitle="按排队人数、等待时间排序，优先展示当前快照下压力最高的窗口。"
+            title="查看全部餐厅快照"
+            subtitle="默认折叠，避免全部餐厅信息干扰高峰排队压力判断。"
           >
-            <div v-if="snapshot.busyWindows.length" class="window-list">
-              <article
-                v-for="window in snapshot.busyWindows"
-                :key="window.windowId"
-                class="window-item"
-              >
-                <div class="window-main">
-                  <strong>{{ window.restaurantName }} / {{ window.name }}</strong>
-                  <span class="crowd-chip" :class="crowdClass(window.crowdLevel)">
-                    {{ crowdLabel(window.crowdLevel) }}
-                  </span>
+            <el-collapse>
+              <el-collapse-item name="all-restaurants" title="展开全部餐厅快照">
+                <div class="restaurant-list">
+                  <article
+                    v-for="restaurant in snapshot.restaurants"
+                    :key="`all-${restaurant.restaurantId}`"
+                    class="restaurant-card compact"
+                  >
+                    <div class="restaurant-head">
+                      <div>
+                        <strong>{{ restaurant.name }}</strong>
+                        <span class="restaurant-sub">{{ restaurant.pressureLabel }}排队压力</span>
+                      </div>
+                      <span class="pressure-chip" :class="`pressure-${restaurant.pressureTone}`">
+                        {{ restaurant.pressureLabel }}
+                      </span>
+                    </div>
+                    <div class="restaurant-metrics">
+                      <span>排队/服务负载 {{ restaurant.currentCount }} 人</span>
+                      <span>排队人数 {{ restaurant.queueTotal }} 人</span>
+                      <span>平均窗口等待 {{ restaurant.avgWait }} 分钟</span>
+                      <span>开放窗口 {{ restaurant.openWindows }} / {{ restaurant.totalWindows }}</span>
+                    </div>
+                  </article>
                 </div>
-                <div class="window-metrics">
-                  <span>排队 {{ window.queueLength }} 人</span>
-                  <span>服务中 {{ window.servingCount }} 人</span>
-                  <span>等待 {{ window.waitMinutes }} 分钟</span>
-                </div>
-              </article>
-            </div>
-            <EmptyState
-              v-else
-              title="当前没有拥挤窗口"
-              description="高峰分钟下所有营业窗口排队人数都为 0。"
-            />
+              </el-collapse-item>
+            </el-collapse>
           </SectionCard>
         </div>
       </section>
@@ -166,8 +175,9 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import * as echarts from 'echarts'
+import { useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { Clock, Grid, Tickets, UserFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ChartCard from '../components/ChartCard.vue'
@@ -179,114 +189,103 @@ import { useSimulationStore } from '../stores/simulationStore'
 import {
   avgWaitMinutes,
   flattenWindows,
+  openWindowCount,
+  queuePressureLevel,
   resolvePeakTimePoint,
-  resolveTimePoint,
   totalCurrentCount,
   totalQueueLength,
+  totalServingCount,
 } from '../utils/simulationStats'
 
+const router = useRouter()
 const store = useSimulationStore()
-const { currentRun, currentMinute, profiles, scenarios } = storeToRefs(store)
+const { currentRun } = storeToRefs(store)
 
-const flowTrendRef = ref(null)
 const crowdChartRef = ref(null)
-let flowTrendChart
 let crowdChart
 
 const snapshot = computed(() => {
-  const point = resolvePeakTimePoint(currentRun.value) || resolveTimePoint(currentRun.value, currentMinute.value)
-  if (!point) return null
+  if (currentRun.value?.status !== 'FINISHED') {
+    return null
+  }
+  const point = resolvePeakTimePoint(currentRun.value)
+  if (!point) {
+    return null
+  }
 
-  const windows = flattenWindows(point)
-  const openWindows = windows.filter((entry) => entry.window.status !== 'CLOSED')
-  const serviceTotal = openWindows.reduce(
-    (sum, entry) => sum + Number(entry.window.servingCount || 0),
-    0,
-  )
+  const windowEntries = flattenWindows(point).filter(({ window }) => window.status !== 'CLOSED')
   const restaurants = (point.restaurants || [])
     .map((restaurant) => {
-      const restaurantWindows = restaurant.windows || []
-      const queueTotal = restaurantWindows.reduce(
+      const restaurantPoint = { restaurants: [restaurant] }
+      const avgWait = avgWaitMinutes(restaurantPoint)
+      const pressure = queuePressureLevel(avgWait)
+      const queueTotal = (restaurant.windows || []).reduce(
         (sum, window) => sum + Number(window.queueLength || 0),
         0,
       )
-      const servingTotal = restaurantWindows.reduce(
-        (sum, window) => sum + Number(window.servingCount || 0),
-        0,
-      )
-      const totalWindows = restaurantWindows.length
-      const openWindowCount = restaurantWindows.filter((window) => window.status !== 'CLOSED').length
-      const capacity = Number(restaurant.capacity || 0)
-      const currentCount = Number(restaurant.currentCount || 0)
       return {
         restaurantId: restaurant.restaurantId,
         name: restaurant.name,
-        crowdLevel: restaurant.crowdLevel,
-        currentCount,
+        currentCount: Number(restaurant.currentCount || 0),
         queueTotal,
-        servingTotal,
-        openWindows: openWindowCount,
-        totalWindows,
-        loadRate: capacity > 0 ? round((currentCount / capacity) * 100, 1) : 0,
-        avgWait: round(avgWaitMinutes({ restaurants: [{ ...restaurant }] }), 1),
+        avgWait,
+        openWindows: (restaurant.windows || []).filter((window) => window.status !== 'CLOSED').length,
+        totalWindows: (restaurant.windows || []).length,
+        pressureLabel: pressure.label,
+        pressureTone: pressure.tone,
       }
     })
-    .sort((left, right) => right.currentCount - left.currentCount)
+    .sort((left, right) => {
+      if (right.avgWait !== left.avgWait) return right.avgWait - left.avgWait
+      if (right.queueTotal !== left.queueTotal) return right.queueTotal - left.queueTotal
+      return right.currentCount - left.currentCount
+    })
+
+  const topWindows = windowEntries
+    .map(({ restaurantName, window }) => ({
+      restaurantName,
+      windowId: window.windowId,
+      name: window.name || `窗口 ${window.windowId}`,
+      queueLength: Number(window.queueLength || 0),
+      waitMinutes: Number(window.waitMinutes || 0),
+      crowdLevel: window.crowdLevel,
+      crowdLabel: crowdLabel(window.crowdLevel),
+      crowdTone: crowdTone(window.crowdLevel),
+      status: window.status,
+    }))
+    .sort((left, right) => {
+      if (right.waitMinutes !== left.waitMinutes) return right.waitMinutes - left.waitMinutes
+      return right.queueLength - left.queueLength
+    })
+    .slice(0, 5)
 
   const crowdBuckets = ['IDLE', 'NORMAL', 'BUSY', 'EXTREME'].map((level) => ({
     label: crowdLabel(level),
-    value: openWindows.filter((entry) => entry.window.crowdLevel === level).length,
+    value: windowEntries.filter(({ window }) => window.crowdLevel === level).length,
   }))
 
-  const trend = (currentRun.value?.timePoints || []).map((timePoint) => {
-    const entries = flattenWindows(timePoint)
-    return {
-      label: `${timePoint.minute} 分`,
-      load: totalCurrentCount(timePoint),
-      queue: totalQueueLength(timePoint),
-      serving: entries.reduce((sum, entry) => sum + Number(entry.window.servingCount || 0), 0),
-    }
-  })
-  
   return {
     minute: point.minute,
-    minuteLabel: `createdAt ${formatTime(currentRun.value?.createdAt)}`,
+    createdAtLabel: `生成于 ${formatTime(currentRun.value?.createdAt)}`,
     loadCount: totalCurrentCount(point),
     queueTotal: totalQueueLength(point),
-    queueWindowCount: openWindows.filter((entry) => Number(entry.window.queueLength || 0) > 0).length,
-    openWindowCount: openWindows.length,
-    serviceTotal,
-    sampleNote: currentRun.value?.metrics?.totalVirtualUsers
-      ? `样本 ${currentRun.value.metrics.totalVirtualUsers} 人`
+    queueWindowCount: windowEntries.filter(({ window }) => Number(window.queueLength || 0) > 0).length,
+    openWindowCount: openWindowCount(point),
+    serviceTotal: totalServingCount(point),
+    loadNote: currentRun.value?.metrics?.totalVirtualUsers
+      ? `仿真样本 ${currentRun.value.metrics.totalVirtualUsers} 人`
       : '',
     restaurants,
+    topRestaurants: restaurants.slice(0, 5),
+    topWindows,
     crowdBuckets,
-    trend,
-    busyWindows: openWindows
-      .map((entry) => ({
-        restaurantName: entry.restaurantName,
-        windowId: entry.window.windowId,
-        name: entry.window.name,
-        queueLength: Number(entry.window.queueLength || 0),
-        servingCount: Number(entry.window.servingCount || 0),
-        waitMinutes: Number(entry.window.waitMinutes || 0),
-        crowdLevel: entry.window.crowdLevel,
-      }))
-      .sort((left, right) => {
-        if (right.queueLength !== left.queueLength) return right.queueLength - left.queueLength
-        return right.waitMinutes - left.waitMinutes
-      })
-      .slice(0, 8),
   }
 })
 
 onMounted(async () => {
   try {
     await store.initializeDashboard()
-    if (!currentRun.value && profiles.value.length && scenarios.value.length) {
-      await store.runCurrentSimulation()
-    }
-    renderCharts()
+    renderCrowdChart()
     window.addEventListener('resize', resizeCharts)
   } catch (error) {
     ElMessage.error(error.message || '人流快照页初始化失败')
@@ -295,78 +294,14 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)
-  flowTrendChart?.dispose()
   crowdChart?.dispose()
 })
 
 watch(
   () => snapshot.value,
-  () => nextTick(renderCharts),
+  () => nextTick(renderCrowdChart),
   { deep: true },
 )
-
-async function handleRefresh() {
-  try {
-    await store.runCurrentSimulation()
-  } catch (error) {
-    ElMessage.error(error.message || '重新运行仿真失败')
-  }
-}
-
-function renderCharts() {
-  renderFlowTrend()
-  renderCrowdChart()
-}
-
-function renderFlowTrend() {
-  if (!flowTrendRef.value || !snapshot.value?.trend?.length) {
-    flowTrendChart?.dispose()
-    flowTrendChart = null
-    return
-  }
-  if (!flowTrendChart) {
-    flowTrendChart = echarts.init(flowTrendRef.value)
-  }
-
-  flowTrendChart.setOption({
-    color: ['#2563eb', '#f97316', '#14b8a6'],
-    tooltip: { trigger: 'axis' },
-    legend: { top: 0 },
-    grid: { left: 42, right: 24, top: 42, bottom: 32 },
-    xAxis: {
-      type: 'category',
-      data: snapshot.value.trend.map((item) => item.label),
-      boundaryGap: false,
-    },
-    yAxis: {
-      type: 'value',
-      name: '人数',
-    },
-    series: [
-      {
-        name: '负载人数',
-        type: 'line',
-        smooth: true,
-        symbolSize: 6,
-        data: snapshot.value.trend.map((item) => item.load),
-      },
-      {
-        name: '排队人数',
-        type: 'line',
-        smooth: true,
-        symbolSize: 6,
-        data: snapshot.value.trend.map((item) => item.queue),
-      },
-      {
-        name: '服务中人数',
-        type: 'line',
-        smooth: true,
-        symbolSize: 6,
-        data: snapshot.value.trend.map((item) => item.serving),
-      },
-    ],
-  })
-}
 
 function renderCrowdChart() {
   if (!crowdChartRef.value || !snapshot.value) {
@@ -381,7 +316,7 @@ function renderCrowdChart() {
   crowdChart.setOption({
     color: ['#94a3b8', '#2563eb', '#f59e0b', '#ef4444'],
     tooltip: { trigger: 'axis' },
-    grid: { left: 28, right: 12, top: 20, bottom: 28 },
+    grid: { left: 30, right: 12, top: 20, bottom: 30 },
     xAxis: {
       type: 'category',
       data: snapshot.value.crowdBuckets.map((item) => item.label),
@@ -394,7 +329,7 @@ function renderCrowdChart() {
     series: [
       {
         type: 'bar',
-        barMaxWidth: 42,
+        barMaxWidth: 40,
         data: snapshot.value.crowdBuckets.map((item) => item.value),
       },
     ],
@@ -402,7 +337,6 @@ function renderCrowdChart() {
 }
 
 function resizeCharts() {
-  flowTrendChart?.resize()
   crowdChart?.resize()
 }
 
@@ -412,13 +346,13 @@ function crowdLabel(level) {
       IDLE: '空闲',
       NORMAL: '正常',
       BUSY: '繁忙',
-      EXTREME: '极拥挤',
+      EXTREME: '极端拥挤',
     }[level] || level
   )
 }
 
-function crowdClass(level) {
-  return `crowd-${String(level || '').toLowerCase()}`
+function crowdTone(level) {
+  return String(level || '').toLowerCase()
 }
 
 function formatTime(value) {
@@ -427,93 +361,104 @@ function formatTime(value) {
   if (Number.isNaN(date.getTime())) return String(value)
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
-
-function round(value, digits) {
-  const base = 10 ** digits
-  return Math.round(Number(value || 0) * base) / base
-}
 </script>
 
 <style scoped>
-.restaurant-zone {
-  grid-column: span 7;
-}
-
-.crowd-zone {
-  grid-column: span 5;
-}
-
-.trend-zone {
-  grid-column: span 7;
-}
-
-.window-zone {
-  grid-column: span 5;
-}
-
-.restaurant-grid {
+.empty-shell {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  justify-items: center;
+  gap: 12px;
 }
 
-.restaurant-card {
+.restaurant-zone,
+.distribution-zone {
+  grid-column: span 7;
+}
+
+.window-zone,
+.all-zone {
+  grid-column: span 5;
+}
+
+.restaurant-list,
+.window-list {
   display: grid;
   gap: 12px;
+}
+
+.restaurant-card,
+.window-item {
+  display: grid;
+  gap: 10px;
   padding: 16px;
   border: 1px solid #e2e8f0;
   border-radius: 18px;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
+.restaurant-card.compact {
+  padding: 14px;
+}
+
 .restaurant-head,
-.window-main,
-.restaurant-foot,
+.window-head,
+.restaurant-metrics,
 .window-metrics {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .restaurant-head strong,
-.window-main strong {
+.window-head strong {
   color: #0f172a;
   font-size: 15px;
 }
 
-.restaurant-metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.restaurant-metrics div {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: #f8fafc;
-}
-
-.restaurant-metrics span,
-.restaurant-foot,
+.restaurant-sub,
+.window-sub,
+.restaurant-metrics,
 .window-metrics {
   color: #64748b;
   font-size: 12px;
   font-weight: 700;
 }
 
-.restaurant-metrics strong {
-  color: #1e3a8a;
-  font-size: 18px;
+.restaurant-head > div,
+.window-head > div {
+  display: grid;
+  gap: 4px;
 }
 
+.pressure-chip,
 .crowd-chip {
   padding: 5px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.pressure-low {
+  color: #475569;
+  background: #e2e8f0;
+}
+
+.pressure-medium {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.pressure-high {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.pressure-extreme,
+.crowd-extreme {
+  color: #b91c1c;
+  background: #fee2e2;
 }
 
 .crowd-idle {
@@ -531,35 +476,16 @@ function round(value, digits) {
   background: #fef3c7;
 }
 
-.crowd-extreme {
-  color: #b91c1c;
-  background: #fee2e2;
-}
-
-.window-list {
-  display: grid;
-  gap: 12px;
-}
-
-.window-item {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+.chart-surface {
+  min-height: 280px;
 }
 
 @media (max-width: 1100px) {
   .restaurant-zone,
-  .crowd-zone,
-  .trend-zone,
-  .window-zone {
+  .window-zone,
+  .distribution-zone,
+  .all-zone {
     grid-column: auto;
-  }
-
-  .restaurant-grid {
-    grid-template-columns: 1fr;
   }
 }
 </style>

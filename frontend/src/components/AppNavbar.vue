@@ -2,12 +2,10 @@
   <header class="navbar">
     <div class="navbar-shell">
       <RouterLink to="/" class="brand">
-        <div class="brand-logo">
-          <div class="brand-ring">BJ</div>
-        </div>
+        <div class="brand-logo">BJ</div>
         <div class="brand-copy">
           <strong>BJTU Dining Simulation System</strong>
-          <span>北京交通大学食堂仿真系统</span>
+          <span>北京交通大学食堂仿真与分流决策平台</span>
         </div>
       </RouterLink>
 
@@ -23,40 +21,22 @@
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
-
-      <div class="nav-side">
-        <div class="notice">
-          <Bell class="notice-icon" />
-          <span>3</span>
-        </div>
-        <div class="admin-card">
-          <div class="avatar">管</div>
-          <span>管理员</span>
-        </div>
-      </div>
     </div>
   </header>
 </template>
 
 <script setup>
-import {
-  Bell,
-  DataAnalysis,
-  HomeFilled,
-  Histogram,
-  Setting,
-  UserFilled,
-} from '@element-plus/icons-vue'
+import { DataAnalysis, HomeFilled, Histogram, Setting, UserFilled } from '@element-plus/icons-vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
 
 const navItems = [
   { to: '/', label: '首页', icon: HomeFilled },
-  { to: '/flow', label: '人流快照', icon: UserFilled },
   { to: '/config', label: '参数配置', icon: Setting },
+  { to: '/flow', label: '人流快照', icon: UserFilled },
   { to: '/statistics', label: '统计分析', icon: Histogram },
-  { to: '/recommendation', label: '推荐结果', icon: DataAnalysis },
+  { to: '/recommendation', label: '分流对比', icon: DataAnalysis },
 ]
 </script>
 
@@ -73,12 +53,12 @@ const navItems = [
 
 .navbar-shell {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  gap: 24px;
+  gap: 28px;
   width: min(1440px, calc(100% - 64px));
-  margin: 0 auto;
   min-height: 72px;
+  margin: 0 auto;
 }
 
 .brand {
@@ -91,26 +71,15 @@ const navItems = [
 .brand-logo {
   display: grid;
   place-items: center;
-  width: 50px;
-  height: 50px;
-  border-radius: 50%;
-  background: linear-gradient(180deg, #ffffff 0%, #edf4ff 100%);
-  box-shadow:
-    inset 0 0 0 1px rgb(37 99 235 / 18%),
-    0 8px 18px rgb(37 99 235 / 10%);
-}
-
-.brand-ring {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 2px solid #2563eb;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   color: #2563eb;
+  border: 2px solid #2563eb;
+  background: linear-gradient(180deg, #ffffff 0%, #edf4ff 100%);
   font-size: 12px;
-  letter-spacing: 0.08em;
   font-weight: 900;
+  letter-spacing: 0.08em;
 }
 
 .brand-copy {
@@ -132,8 +101,9 @@ const navItems = [
 
 .nav-links {
   display: flex;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 10px;
+  overflow: auto;
 }
 
 .nav-link {
@@ -157,13 +127,10 @@ const navItems = [
   height: 3px;
   border-radius: 999px 999px 0 0;
   background: transparent;
-  content: "";
+  content: '';
 }
 
-.nav-link:hover {
-  color: #2563eb;
-}
-
+.nav-link:hover,
 .nav-link.active {
   color: #2563eb;
 }
@@ -177,67 +144,6 @@ const navItems = [
   height: 19px;
 }
 
-.nav-side {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.notice {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  color: #64748b;
-  background: #f8fafc;
-  box-shadow: inset 0 0 0 1px #e2e8f0;
-}
-
-.notice span {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: #ffffff;
-  background: #f97316;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 20px;
-  text-align: center;
-}
-
-.notice-icon {
-  width: 20px;
-  height: 20px;
-}
-
-.admin-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding-left: 4px;
-  color: #334155;
-  font-weight: 700;
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  color: #2563eb;
-  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
-  box-shadow: inset 0 0 0 1px rgb(37 99 235 / 10%);
-  font-size: 14px;
-  font-weight: 900;
-}
-
 @media (max-width: 1280px) {
   .navbar-shell {
     grid-template-columns: 1fr;
@@ -248,7 +154,6 @@ const navItems = [
 
   .nav-links {
     justify-content: flex-start;
-    overflow: auto;
   }
 
   .nav-link {
@@ -263,10 +168,6 @@ const navItems = [
 
   .nav-link::after {
     display: none;
-  }
-
-  .nav-side {
-    justify-content: flex-end;
   }
 }
 </style>

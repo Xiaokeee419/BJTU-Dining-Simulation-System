@@ -15,7 +15,7 @@ import {
   generateDiversionSuggestion,
   generateRecommendation,
 } from '../api/recommendation'
-import { resolvePeakTimePoint } from '../utils/simulationStats'
+import { openWindowCount, resolvePeakTimePoint, totalCurrentCount } from '../utils/simulationStats'
 
 export const useSimulationStore = defineStore('simulation', () => {
   const profiles = ref([])
@@ -252,8 +252,8 @@ export const useSimulationStore = defineStore('simulation', () => {
     }
 
     if (!baselineRun.value) {
-      baselineRun.value = clone(sourceRun)
-      baseMetrics.value = clone(sourceRun.metrics || null)
+      ElMessage.warning('请先使用当前仿真作为未分流基准')
+      return
     }
 
     const minute = selectedCompareMinute.value ?? resolvePeakMinute(baselineRun.value)
@@ -278,6 +278,7 @@ export const useSimulationStore = defineStore('simulation', () => {
       strategyComparison.value = result.comparison || null
       baseMetrics.value = result.baseMetrics || baselineRun.value.metrics || null
       compareMetrics.value = result.compareMetrics || null
+      diversionComparisonStatus.value = result.status || 'IDLE'
 
       if (result.compareRunId) {
         compareRun.value = await getSimulation(result.compareRunId)
@@ -289,9 +290,15 @@ export const useSimulationStore = defineStore('simulation', () => {
         diversionComparisonStatus.value = 'COMPLETED'
         ElMessage.success('分流对比已完成')
       } else {
-        diversionComparisonStatus.value = 'IDLE'
-        if (result.diversionResult?.reason) {
-          ElMessage.warning(result.diversionResult.reason)
+        if (diversionComparisonStatus.value === 'COMPLETED') {
+          diversionComparisonStatus.value = 'IDLE'
+        }
+        const feedback = resolveComparisonFeedback(result)
+        if (diversionComparisonStatus.value === 'ERROR') {
+          comparisonError.value = feedback || '分流对比失败'
+        }
+        if (feedback) {
+          ElMessage.warning(feedback)
         }
       }
     } catch (error) {
@@ -416,6 +423,16 @@ function resolveDiversionTargetLevel(crowdLevel) {
   return normalized === 'IDLE' ? 'IDLE' : 'NORMAL'
 }
 
+function resolveComparisonFeedback(result) {
+  if (result?.status === 'MOCK_UNSUPPORTED') {
+    return 'Mock 模式暂不支持真实分流对比，请切换到真实后端接口。'
+  }
+  if (result?.status === 'ERROR') {
+    return result?.message || result?.diversionResult?.reason || '分流对比失败'
+  }
+  return result?.diversionResult?.reason || ''
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -445,6 +462,7 @@ function loadSavedScheme() {
 }
 
 function rememberRun(run) {
+  const peakPoint = resolvePeakTimePoint(run)
   const meta = {
     runId: run.runId,
     createdAt: run.createdAt || new Date().toISOString(),
@@ -452,6 +470,10 @@ function rememberRun(run) {
     scenarioName: run.scenario?.name || run.scenario?.mealPeriod || '当前场景',
     durationMinutes: run.scenario?.durationMinutes || 0,
     avgWaitMinutes: run.metrics?.avgWaitMinutes ?? null,
+    maxQueueLength: run.metrics?.maxQueueLength ?? null,
+    peakMinute: peakPoint?.minute ?? null,
+    peakLoadCount: peakPoint ? totalCurrentCount(peakPoint) : null,
+    openWindowCount: peakPoint ? openWindowCount(peakPoint) : null,
   }
   if (typeof window !== 'undefined') {
     window.localStorage.setItem('bjtu-dining-last-run', JSON.stringify(meta))

@@ -2,38 +2,36 @@
   <section class="recent-card">
     <div class="recent-head">
       <Clock class="head-icon" />
-      <h3>最近一次仿真</h3>
+      <h3>最近一次未分流仿真</h3>
     </div>
 
     <div v-if="runMeta" class="recent-body">
-      <span class="status-pill">仿真完成</span>
+      <span class="status-pill">基线已生成</span>
       <dl>
         <div>
-          <dt>仿真方案</dt>
+          <dt>Run ID</dt>
+          <dd>#{{ runMeta.runId }}</dd>
+        </div>
+        <div>
+          <dt>场景</dt>
           <dd>{{ runMeta.scenarioName || `Run ${runMeta.runId}` }}</dd>
         </div>
         <div>
-          <dt>仿真时间</dt>
+          <dt>运行时间</dt>
           <dd>{{ formatDate(runMeta.createdAt) }}</dd>
         </div>
         <div>
-          <dt>仿真时长</dt>
-          <dd>{{ runMeta.durationMinutes || '--' }} 分钟</dd>
-        </div>
-        <div>
-          <dt>平均等待</dt>
+          <dt>平均排队</dt>
           <dd>{{ runMeta.avgWaitMinutes ?? '--' }} 分钟</dd>
         </div>
       </dl>
-      <el-button type="primary" @click="$emit('open')">
-        继续查看
-      </el-button>
+      <el-button type="primary" @click="$emit('open')">查看结果</el-button>
     </div>
 
     <EmptyState
       v-else
       title="尚无仿真记录"
-      description="运行一次仿真后，最近结果会显示在这里。"
+      description="请先到参数配置页运行一次未分流仿真。"
     />
   </section>
 </template>
@@ -110,7 +108,7 @@ function formatDate(value) {
   height: 10px;
   border-radius: 50%;
   background: currentColor;
-  content: "";
+  content: '';
 }
 
 dl {

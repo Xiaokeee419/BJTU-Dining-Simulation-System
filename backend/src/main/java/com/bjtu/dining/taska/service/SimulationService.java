@@ -160,6 +160,8 @@ public class SimulationService {
             serviceCarry.put(window.windowId(), 0.0);
         }
 
+        // Wait metrics capture the estimated wait at the moment a diner chooses a window.
+        // Diversion of existing queues affects snapshot pressure more directly than these values.
         List<Double> selectedWaits = new ArrayList<>();
         List<SimulationTimePoint> timePoints = new ArrayList<>();
         int maxQueueLength = 0;

@@ -14,7 +14,7 @@ export async function generateDiversionSuggestion(payload) {
       runId: payload.runId,
       minute: payload.minute ?? 0,
       suggestions: [],
-      reason: 'Mock mode does not provide diversion suggestions.',
+      reason: 'Mock 模式暂不支持真实分流建议，请切换到真实后端接口。',
     }
   }
   return http.post('/recommendations/diversion', payload).then(unwrapResponse)
