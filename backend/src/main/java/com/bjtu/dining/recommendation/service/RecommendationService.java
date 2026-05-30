@@ -151,17 +151,12 @@ public class RecommendationService {
         List<DiversionSuggestionItem> suggestions = new ArrayList<>();
         Map<Long, Integer> reservedTargetLoad = new HashMap<>();
         for (WindowDiversionCandidate source : sources) {
-            double sourcePressure = pressureScore(source);
-            Optional<TargetCandidate> target = targets.stream()
-                    .filter(candidate -> !candidate.windowId().equals(source.windowId()))
-                    .map(candidate -> new TargetCandidate(
-                            candidate,
-                            pressureScore(candidate),
-                            remainingTargetCapacity(candidate, targetCrowdLevel, reservedTargetLoad.getOrDefault(candidate.windowId(), 0))
-                    ))
-                    .filter(candidate -> candidate.remainingCapacity() > 0)
-                    .filter(candidate -> candidate.pressureScore() + 0.12 < sourcePressure)
-                    .max(Comparator.comparingDouble(candidate -> diversionTargetScore(source, candidate.candidate())));
+            Optional<TargetCandidate> target = selectTargetCandidate(
+                    source,
+                    targets,
+                    targetCrowdLevel,
+                    reservedTargetLoad
+            );
             if (target.isEmpty()) {
                 continue;
             }
@@ -795,6 +790,63 @@ public class RecommendationService {
                 .toList();
     }
 
+    private Optional<TargetCandidate> selectTargetCandidate(
+            WindowDiversionCandidate source,
+            List<WindowDiversionCandidate> targets,
+            String targetCrowdLevel,
+            Map<Long, Integer> reservedTargetLoad
+    ) {
+        double sourcePressure = pressureScore(source);
+
+        Optional<TargetCandidate> strictMatch = targets.stream()
+                .filter(candidate -> !candidate.windowId().equals(source.windowId()))
+                .map(candidate -> buildTargetCandidate(candidate, targetCrowdLevel, reservedTargetLoad, false))
+                .filter(candidate -> candidate.remainingCapacity() > 0)
+                .filter(candidate -> candidate.pressureScore() + strictPressureBuffer(targetCrowdLevel) < sourcePressure)
+                .max(Comparator.comparingDouble(candidate -> diversionTargetScore(source, candidate.candidate())));
+        if (strictMatch.isPresent()) {
+            return strictMatch;
+        }
+
+        Optional<TargetCandidate> relaxedMatch = targets.stream()
+                .filter(candidate -> !candidate.windowId().equals(source.windowId()))
+                .map(candidate -> buildTargetCandidate(candidate, targetCrowdLevel, reservedTargetLoad, true))
+                .filter(candidate -> candidate.remainingCapacity() > 0)
+                .filter(candidate -> candidate.pressureScore() + 0.03 <= sourcePressure + 0.05)
+                .max(Comparator.comparingDouble(candidate -> fallbackTargetScore(source, candidate)));
+        if (relaxedMatch.isPresent()) {
+            return relaxedMatch;
+        }
+
+        return targets.stream()
+                .filter(candidate -> !candidate.windowId().equals(source.windowId()))
+                .map(candidate -> buildEmergencyTargetCandidate(source, candidate, reservedTargetLoad))
+                .filter(candidate -> candidate.remainingCapacity() > 0)
+                .filter(candidate -> candidate.pressureScore() <= sourcePressure + 0.12)
+                .max(Comparator.comparingDouble(candidate -> fallbackTargetScore(source, candidate)));
+    }
+
+    private TargetCandidate buildTargetCandidate(
+            WindowDiversionCandidate candidate,
+            String targetCrowdLevel,
+            Map<Long, Integer> reservedTargetLoad,
+            boolean relaxedMode
+    ) {
+        int reservedLoad = reservedTargetLoad.getOrDefault(candidate.windowId(), 0);
+        int remainingCapacity = remainingTargetCapacity(candidate, targetCrowdLevel, reservedLoad, relaxedMode);
+        return new TargetCandidate(candidate, pressureScore(candidate), remainingCapacity);
+    }
+
+    private TargetCandidate buildEmergencyTargetCandidate(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate candidate,
+            Map<Long, Integer> reservedTargetLoad
+    ) {
+        int reservedLoad = reservedTargetLoad.getOrDefault(candidate.windowId(), 0);
+        int remainingCapacity = emergencyRemainingCapacity(source, candidate, reservedLoad);
+        return new TargetCandidate(candidate, pressureScore(candidate), remainingCapacity);
+    }
+
     private double diversionTargetScore(WindowDiversionCandidate source, WindowDiversionCandidate target) {
         double pressureGap = Math.max(0.0, pressureScore(source) - pressureScore(target));
         double waitGap = Math.max(0, source.waitMinutes() - target.waitMinutes()) * 1.8;
@@ -829,8 +881,14 @@ public class RecommendationService {
         return Math.min(40, Math.min(Math.min(source.queueLength(), remainingTargetCapacity), desired));
     }
 
-    private int remainingTargetCapacity(WindowDiversionCandidate target, String targetCrowdLevel, int reservedLoad) {
-        return Math.max(0, maxQueueForLevel(target, targetCrowdLevel) - target.queueLength() - reservedLoad);
+    private int remainingTargetCapacity(
+            WindowDiversionCandidate target,
+            String targetCrowdLevel,
+            int reservedLoad,
+            boolean relaxedMode
+    ) {
+        int maxQueue = relaxedMode ? relaxedMaxQueueForLevel(target, targetCrowdLevel) : maxQueueForLevel(target, targetCrowdLevel);
+        return Math.max(0, maxQueue - target.queueLength() - reservedLoad);
     }
 
     private int maxQueueForLevel(WindowDiversionCandidate candidate, String targetCrowdLevel) {
@@ -841,6 +899,32 @@ public class RecommendationService {
             default -> 14.0;
         };
         return Math.max(2, (int) Math.floor(comfortMinutes * Math.max(0.8, candidate.serviceRatePerMinute())));
+    }
+
+    private int relaxedMaxQueueForLevel(WindowDiversionCandidate candidate, String targetCrowdLevel) {
+        double comfortMinutes = switch (targetCrowdLevel) {
+            case "IDLE" -> 7.0;
+            case "NORMAL" -> 11.0;
+            case "BUSY" -> 14.0;
+            default -> 17.0;
+        };
+        return Math.max(3, (int) Math.floor(comfortMinutes * Math.max(0.8, candidate.serviceRatePerMinute())));
+    }
+
+    private int emergencyRemainingCapacity(
+            WindowDiversionCandidate source,
+            WindowDiversionCandidate target,
+            int reservedLoad
+    ) {
+        int queueGap = source.queueLength() - target.queueLength();
+        if (queueGap <= 0) {
+            return 0;
+        }
+        if (target.waitMinutes() > source.waitMinutes() + 3) {
+            return 0;
+        }
+        int emergencyQuota = Math.min(3, Math.max(1, queueGap / 4));
+        return Math.max(0, emergencyQuota - reservedLoad);
     }
 
     private double acceptanceRate(
@@ -885,6 +969,26 @@ public class RecommendationService {
             default -> 0.0;
         };
         return normalizedWait * 0.92 + normalizedQueue * 0.78 + loadRatio * 0.28 + crowdComponent * 0.55;
+    }
+
+    private double strictPressureBuffer(String targetCrowdLevel) {
+        return switch (targetCrowdLevel) {
+            case "IDLE" -> 0.10;
+            case "NORMAL" -> 0.08;
+            case "BUSY" -> 0.06;
+            default -> 0.04;
+        };
+    }
+
+    private double fallbackTargetScore(WindowDiversionCandidate source, TargetCandidate target) {
+        double pressureGap = pressureScore(source) - target.pressureScore();
+        double waitGap = source.waitMinutes() - target.candidate().waitMinutes();
+        double queueGap = source.queueLength() - target.candidate().queueLength();
+        return pressureGap * 20.0
+                + waitGap * 1.2
+                + queueGap * 0.7
+                + target.remainingCapacity() * 0.4
+                + target.candidate().serviceRatePerMinute() * 0.5;
     }
 
     private double sourcePressureMargin(String targetCrowdLevel) {

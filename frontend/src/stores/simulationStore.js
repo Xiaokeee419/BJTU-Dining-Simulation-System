@@ -420,7 +420,7 @@ function resolvePeakMinuteValue(run) {
 
 function resolveDiversionTargetLevel(crowdLevel) {
   const normalized = String(crowdLevel || 'NORMAL').toUpperCase()
-  return normalized === 'IDLE' ? 'IDLE' : 'NORMAL'
+  return ['IDLE', 'NORMAL', 'BUSY', 'EXTREME'].includes(normalized) ? normalized : 'NORMAL'
 }
 
 function resolveComparisonFeedback(result) {
