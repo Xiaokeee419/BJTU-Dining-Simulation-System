@@ -10,7 +10,7 @@ export const scenarios = [
     closedWindowIds: [],
     virtualUserCount: 300,
     durationMinutes: 60,
-    stepMinutes: 5,
+    stepMinutes: 3,
     randomSeed: 20260425,
   },
   {
@@ -24,7 +24,7 @@ export const scenarios = [
     closedWindowIds: [],
     virtualUserCount: 360,
     durationMinutes: 60,
-    stepMinutes: 5,
+    stepMinutes: 3,
     randomSeed: 20260426,
   },
   {
@@ -38,7 +38,7 @@ export const scenarios = [
     closedWindowIds: [3],
     virtualUserCount: 420,
     durationMinutes: 60,
-    stepMinutes: 5,
+    stepMinutes: 3,
     randomSeed: 20260427,
   },
 ]

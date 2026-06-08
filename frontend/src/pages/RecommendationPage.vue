@@ -240,7 +240,7 @@ const {
 
 const hasUsableCurrentRun = computed(() => currentRun.value?.status === 'FINISHED')
 const timeStep = computed(
-  () => Number(currentRun.value?.scenario?.stepMinutes || scenarioForm.value.stepMinutes || 5),
+  () => Number(currentRun.value?.scenario?.stepMinutes || scenarioForm.value.stepMinutes || 3),
 )
 const suggestionCount = computed(() => diversionResult.value?.suggestions?.length || 0)
 const diversionReason = computed(() => diversionResult.value?.reason || '尚未生成分流建议')

@@ -165,7 +165,7 @@ const crowdOptions = [
 ]
 
 const durationOptions = [60, 90, 120, 150]
-const stepOptions = [5, 10, 15]
+const stepOptions = [1, 2, 3, 4, 5]
 
 const demandHint = computed(() => {
   const crowdLevel = props.modelValue.crowdLevel
@@ -192,7 +192,7 @@ function updateField(key, value) {
 }
 
 function updateDurationMinutes(value) {
-  const durationMinutes = normalizeDuration(Number(value || 60), Number(props.modelValue.stepMinutes || 5))
+  const durationMinutes = normalizeDuration(Number(value || 60), Number(props.modelValue.stepMinutes || 3))
   emit('update:modelValue', {
     ...props.modelValue,
     durationMinutes,
@@ -200,7 +200,7 @@ function updateDurationMinutes(value) {
 }
 
 function updateStepMinutes(value) {
-  const stepMinutes = Number(value || 5)
+  const stepMinutes = Number(value || 3)
   emit('update:modelValue', {
     ...props.modelValue,
     stepMinutes,

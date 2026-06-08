@@ -52,11 +52,6 @@ public class SimulationService {
             "BUSY", 1.18,
             "EXTREME", 1.38
     );
-    private static final Map<String, Integer> MEAL_BASE_HORIZON = Map.of(
-            "BREAKFAST", 60,
-            "LUNCH", 90,
-            "DINNER", 90
-    );
     private static final Map<String, String> TAG_ALIASES = Map.ofEntries(
             Map.entry("偏辣", "辣味"),
             Map.entry("微辣", "辣味"),
@@ -69,12 +64,14 @@ public class SimulationService {
     );
 
     private final SeedDataService seedDataService;
+    private final ArrivalCurveGenerator arrivalCurveGenerator;
     private final AtomicLong runIdGenerator = new AtomicLong(10000);
     private final Map<Long, SimulationRunResult> runStore = new ConcurrentHashMap<>();
     private final Map<Long, List<DinerProfile>> cohortStore = new ConcurrentHashMap<>();
 
-    public SimulationService(SeedDataService seedDataService) {
+    public SimulationService(SeedDataService seedDataService, ArrivalCurveGenerator arrivalCurveGenerator) {
         this.seedDataService = seedDataService;
+        this.arrivalCurveGenerator = arrivalCurveGenerator;
     }
 
     public List<UserProfilePreset> userProfilePresets() {
@@ -88,9 +85,9 @@ public class SimulationService {
 
     public List<ScenarioPreset> scenarioPresets() {
         return List.of(
-                new ScenarioPreset("weekday-lunch-peak", "工作日午餐高峰", "LUNCH", "WEEKDAY", "BUSY", 1.0, 1.2, List.of(), 800, 60, 5, 20260425),
-                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐常态", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 600, 60, 5, 20260426),
-                new ScenarioPreset("rainy-lunch-extreme", "雨天午餐极端拥挤", "LUNCH", "WEEKDAY", "EXTREME", 1.25, 1.25, List.of(), 1200, 60, 5, 20260427)
+                new ScenarioPreset("weekday-lunch-peak", "工作日午餐高峰", "LUNCH", "WEEKDAY", "BUSY", 1.0, 1.2, List.of(), 800, 60, 3, 20260425),
+                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐常态", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 600, 60, 3, 20260426),
+                new ScenarioPreset("rainy-lunch-extreme", "雨天午餐极端拥挤", "LUNCH", "WEEKDAY", "EXTREME", 1.25, 1.25, List.of(), 1200, 60, 3, 20260427)
         );
     }
 
@@ -278,7 +275,7 @@ public class SimulationService {
 
     private SimulationScenario normalizeScenario(SimulationScenario scenario) {
         if (scenario == null) {
-            return new SimulationScenario("LUNCH", "WEEKDAY", "BUSY", 1.0, 1.1, List.of(), 800, 60, 5, 20260427L);
+            return new SimulationScenario("LUNCH", "WEEKDAY", "BUSY", 1.0, 1.1, List.of(), 800, 60, 3, 20260427L);
         }
         return new SimulationScenario(
                 defaultText(scenario.mealPeriod(), "LUNCH"),
@@ -289,7 +286,7 @@ public class SimulationService {
                 scenario.closedWindowIds() == null ? List.of() : scenario.closedWindowIds(),
                 scenario.virtualUserCount() == null ? 800 : scenario.virtualUserCount(),
                 scenario.durationMinutes() == null ? 60 : scenario.durationMinutes(),
-                scenario.stepMinutes() == null ? 5 : scenario.stepMinutes(),
+                scenario.stepMinutes() == null ? 3 : scenario.stepMinutes(),
                 scenario.randomSeed() == null ? 20260427L : scenario.randomSeed()
         );
     }
@@ -408,12 +405,14 @@ public class SimulationService {
         for (int index = 0; index < sampled.size(); index++) {
             StudentSeed student = sampled.get(index);
             int baseArrival = arrivalMinute(student, scenario.mealPeriod());
-            int arrivalMinute = scaledArrivalMinute(
+            int arrivalMinute = arrivalCurveGenerator.generateArrivalMinute(
                     baseArrival,
                     scenario.mealPeriod(),
-                    scenario.durationMinutes(),
+                    scenario.dayType(),
                     scenario.crowdLevel(),
-                    pressure
+                    scenario.durationMinutes(),
+                    pressure,
+                    rng
             );
             Set<String> preferenceTags = new LinkedHashSet<>(student.preferenceTags());
             preferenceTags.addAll(profileTags);
@@ -491,15 +490,6 @@ public class SimulationService {
             case "DINNER" -> student.dinnerArrivalMinute();
             default -> student.lunchArrivalMinute();
         };
-    }
-
-    private int scaledArrivalMinute(int baseMinute, String mealPeriod, int duration, String crowdLevel, double pressure) {
-        int baseHorizon = MEAL_BASE_HORIZON.get(mealPeriod);
-        double scaled = baseMinute * 1.0 / baseHorizon * duration;
-        double center = duration * 0.62;
-        double spread = CROWD_SPREAD_FACTOR.get(crowdLevel) / Math.sqrt(Math.max(0.5, pressure));
-        double adjusted = center + (scaled - center) * spread;
-        return Math.max(0, Math.min(duration, (int) Math.round(adjusted)));
     }
 
     private void serveQueues(
