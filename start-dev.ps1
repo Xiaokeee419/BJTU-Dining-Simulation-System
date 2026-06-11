@@ -73,7 +73,7 @@ mvn spring-boot:run
 $frontendCommand = @"
 `$host.UI.RawUI.WindowTitle = 'BJTU Frontend'
 Set-Location '$frontendDir'
-npm run dev
+npm run dev -- --open
 "@.Trim()
 
 Start-Process powershell -WorkingDirectory $backendDir -ArgumentList @(
@@ -91,6 +91,6 @@ Start-Process powershell -WorkingDirectory $frontendDir -ArgumentList @(
 )
 
 Write-Host 'Backend starting on http://localhost:8080'
-Write-Host 'Frontend dev server starting on http://127.0.0.1:5173'
+Write-Host 'Frontend dev server starting and will open in your browser.'
 Write-Host 'If script execution is blocked, run:'
 Write-Host 'powershell -ExecutionPolicy Bypass -File .\start-dev.ps1'
