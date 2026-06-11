@@ -46,16 +46,16 @@
   - 同步新接口
   - 标明已下线旧接口
 
-- [ ] 修复 `durationMinutes / stepMinutes` 编辑过程中的 `400`
+- [x] 修复 `durationMinutes / stepMinutes` 编辑过程中的 `400`
   - 当前后端强约束：`durationMinutes % stepMinutes == 0`
   - 当前前端实时预览会在用户先改时长、后改步长时触发 `400`
   - 当前前端表单也没有和后端校验对齐，且 HTTP 400 时通常只看到通用报错
   - 需要决定是放宽预览接口校验，还是把这两个参数改成原子更新
 
-- [ ] 降低 `stepMinutes` 对仿真结果的非预期放大影响
-  - 实测同一场景、同一随机种子下，`step=1` 与 `step=30` 的 `served/unserved/maxQueue` 差异很大
-  - 当前循环是“先按整个周期服务，再把该周期所有到达者批量入队”，`stepMinutes` 不只是采样粒度，而是在改变系统动力学
-  - 需要决定是细化到达/服务过程，还是把 `stepMinutes` 限定为展示采样参数
+- [x] 降低 `stepMinutes` 对仿真结果的非预期放大影响
+  - 后端已改为分钟级内部仿真，`stepMinutes` 不再通过批处理顺序改变系统动力学
+  - 不再要求 `durationMinutes` 能被 `stepMinutes` 整除
+  - `stepMinutes` 当前更接近展示/交互参数，后续如需保留需继续明确语义
 
 - [ ] 收敛“哪些仿真参数真正影响人流曲线”的接口语义
   - 当前 `previewArrivalCurve` 会受 `mealPeriod/dayType/crowdLevel/weatherFactor/eventFactor/virtualUserCount/durationMinutes/randomSeed` 影响

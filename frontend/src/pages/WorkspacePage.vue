@@ -71,7 +71,7 @@
             <p class="panel-label">仿真配置</p>
             <h3>最小输入</h3>
           </div>
-          <el-button text @click="refreshPreview">刷新曲线预览</el-button>
+          <el-button text :loading="previewing" @click="refreshPreview">刷新曲线预览</el-button>
         </div>
         <el-form label-position="top" class="form-grid">
           <el-form-item label="用户类型">
@@ -115,6 +115,9 @@
             <el-input-number v-model="simulationForm.randomSeed" :min="1" :max="999999999" />
           </el-form-item>
         </el-form>
+        <p class="support-text">
+          步长不会改变后端核心仿真结果；当前更接近展示粒度参数。
+        </p>
       </article>
 
       <article class="panel-card">
@@ -281,7 +284,6 @@ import { ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import EChartPanel from '../components/EChartPanel.vue'
 import {
-  compareDiversion,
   evaluateOptimization,
   generateDiversion,
   getAdvancedMetrics,
@@ -302,6 +304,7 @@ import {
 } from '../api/v04'
 
 const booting = ref(true)
+const previewing = ref(false)
 const runningSimulation = ref(false)
 const generatingDiversion = ref(false)
 const evaluating = ref(false)
@@ -327,6 +330,7 @@ const optimizationBest = ref(null)
 const optimizationMethod = ref('SIMULATED_ANNEALING')
 const optimizationIterations = ref(24)
 let pollTimer = null
+let previewTimer = null
 
 const simulationForm = reactive({
   userType: 'STUDENT',
@@ -502,13 +506,16 @@ watch(
   () => ({ ...simulationForm }),
   () => {
     if (!booting.value) {
-      refreshPreview()
+      queuePreviewRefresh()
     }
   },
   { deep: true },
 )
 
-onBeforeUnmount(() => stopPolling())
+onBeforeUnmount(() => {
+  stopPolling()
+  clearPreviewTimer()
+})
 
 function buildSimulationPayload() {
   return {
@@ -535,11 +542,28 @@ function deriveTargetCrowdLevel() {
   return simulationForm.crowdLevel === 'EXTREME' ? 'BUSY' : 'NORMAL'
 }
 
+function queuePreviewRefresh() {
+  clearPreviewTimer()
+  previewTimer = window.setTimeout(() => {
+    refreshPreview()
+  }, 180)
+}
+
+function clearPreviewTimer() {
+  if (previewTimer) {
+    window.clearTimeout(previewTimer)
+    previewTimer = null
+  }
+}
+
 async function refreshPreview() {
+  previewing.value = true
   try {
     previewCurve.value = await previewArrivalCurve(buildSimulationPayload())
   } catch (error) {
     ElMessage.error(error.message || '人流曲线预览失败')
+  } finally {
+    previewing.value = false
   }
 }
 

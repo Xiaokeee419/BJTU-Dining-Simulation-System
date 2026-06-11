@@ -171,7 +171,7 @@ public class SimulationService {
     public ArrivalCurveResponse previewArrivalCurve(ArrivalCurvePreviewRequest request) {
         UserProfile profile = normalizeProfile(request == null ? null : request.profile());
         SimulationScenario scenario = normalizeScenario(request == null ? null : request.scenario());
-        validate(profile, scenario);
+        validatePreview(profile, scenario);
         SeedData seedData = seedDataService.seedData();
         int dinerCount = Math.max(1, scenario.virtualUserCount());
         double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel()) * scenario.weatherFactor() * scenario.eventFactor();
@@ -245,14 +245,14 @@ public class SimulationService {
     public AdvancedMetrics advancedMetrics(long runId) {
         SimulationRunResult result = getRunResult(runId);
         MinuteMetricsResponse minuteMetrics = minuteMetrics(runId);
-        int stepMinutes = Math.max(1, result.scenario().stepMinutes());
+        int intervalMinutes = metricIntervalMinutes(minuteMetrics.points());
         int overloadedWindowMinutes = minuteMetrics.points().stream()
-                .mapToInt(item -> item.overloadedWindowCount() * stepMinutes)
+                .mapToInt(item -> item.overloadedWindowCount() * intervalMinutes)
                 .sum();
         int extremeWindowMinutes = minuteMetrics.points().stream()
-                .mapToInt(item -> item.extremeWindowCount() * stepMinutes)
+                .mapToInt(item -> item.extremeWindowCount() * intervalMinutes)
                 .sum();
-        double peakWait10m = peakWait10m(minuteMetrics.points(), stepMinutes);
+        double peakWait10m = peakWait10m(minuteMetrics.points(), intervalMinutes);
         double queueImbalanceIndex = round(minuteMetrics.points().stream()
                 .mapToDouble(MinuteMetricPoint::queueImbalanceIndex)
                 .average()
@@ -307,13 +307,11 @@ public class SimulationService {
         int maxBusyWindowCount = 0;
         int maxExtremeWindowCount = 0;
         int nextDinerIndex = 0;
-        int previousMinute = 0;
         boolean diversionApplied = diversionPlan == null || !diversionPlan.hasSuggestions();
 
-        for (int minute = 0; minute <= scenario.durationMinutes(); minute += scenario.stepMinutes()) {
-            int elapsed = minute > 0 ? minute - previousMinute : 0;
-            if (elapsed > 0) {
-                serveQueues(seedData, scenario, closedWindowIds, queueLengths, serviceCarry, elapsed);
+        for (int minute = 0; minute <= scenario.durationMinutes(); minute++) {
+            if (minute > 0) {
+                serveQueues(seedData, scenario, closedWindowIds, queueLengths, serviceCarry, 1);
             }
 
             if (!diversionApplied && minute >= diversionPlan.startMinute()) {
@@ -358,7 +356,6 @@ public class SimulationService {
             maxBusyWindowCount = Math.max(maxBusyWindowCount, crowdCounts[0]);
             maxExtremeWindowCount = Math.max(maxExtremeWindowCount, crowdCounts[1]);
             timePoints.add(snapshot.timePoint());
-            previousMinute = minute;
         }
 
         int unservedUserCount = queueLengths.values().stream().mapToInt(Integer::intValue).sum();
@@ -435,6 +432,16 @@ public class SimulationService {
     }
 
     private void validate(UserProfile profile, SimulationScenario scenario) {
+        validateProfile(profile);
+        validateScenario(scenario);
+    }
+
+    private void validatePreview(UserProfile profile, SimulationScenario scenario) {
+        validateProfile(profile);
+        validateScenario(scenario);
+    }
+
+    private void validateProfile(UserProfile profile) {
         if (!Set.of("STUDENT", "HURRY", "BUDGET_SENSITIVE").contains(profile.userType())) {
             throw new BadRequestException("profile.userType", "userType must be STUDENT, HURRY or BUDGET_SENSITIVE");
         }
@@ -444,6 +451,9 @@ public class SimulationService {
         if (profile.waitingToleranceMinutes() < 1) {
             throw new BadRequestException("profile.waitingToleranceMinutes", "waitingToleranceMinutes must be greater than 0");
         }
+    }
+
+    private void validateScenario(SimulationScenario scenario) {
         if (!Set.of("BREAKFAST", "LUNCH", "DINNER").contains(scenario.mealPeriod())) {
             throw new BadRequestException("scenario.mealPeriod", "mealPeriod must be BREAKFAST, LUNCH or DINNER");
         }
@@ -462,9 +472,6 @@ public class SimulationService {
         if (scenario.stepMinutes() < 1 || scenario.stepMinutes() > 30) {
             throw new BadRequestException("scenario.stepMinutes", "stepMinutes must be between 1 and 30");
         }
-        if (scenario.durationMinutes() % scenario.stepMinutes() != 0) {
-            throw new BadRequestException("scenario.stepMinutes", "durationMinutes must be divisible by stepMinutes");
-        }
         if (scenario.weatherFactor() <= 0 || scenario.eventFactor() <= 0) {
             throw new BadRequestException("scenario.weatherFactor", "weatherFactor and eventFactor must be positive");
         }
@@ -478,9 +485,6 @@ public class SimulationService {
         int resolved = requestedMinute == null ? resolvePeakMinute(baseRun) : requestedMinute;
         if (resolved < 0 || resolved > scenario.durationMinutes()) {
             throw new BadRequestException("minute", "minute is out of simulation range");
-        }
-        if (resolved % scenario.stepMinutes() != 0) {
-            throw new BadRequestException("minute", "minute must align with stepMinutes");
         }
         return resolved;
     }
@@ -1151,6 +1155,18 @@ public class SimulationService {
                 .average()
                 .orElse(0.0);
         return Math.sqrt(variance) / (average + 1.0);
+    }
+
+    private int metricIntervalMinutes(List<MinuteMetricPoint> points) {
+        if (points.size() < 2) {
+            return 1;
+        }
+        int minGap = Integer.MAX_VALUE;
+        for (int index = 1; index < points.size(); index++) {
+            int gap = Math.max(1, points.get(index).minute() - points.get(index - 1).minute());
+            minGap = Math.min(minGap, gap);
+        }
+        return minGap == Integer.MAX_VALUE ? 1 : minGap;
     }
 
     private Set<String> normalizeProfileTags(List<String> tags) {
