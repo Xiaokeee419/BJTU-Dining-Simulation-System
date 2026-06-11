@@ -1,173 +1,80 @@
 <template>
-  <header class="navbar">
-    <div class="navbar-shell">
-      <RouterLink to="/" class="brand">
-        <div class="brand-logo">BJ</div>
-        <div class="brand-copy">
-          <strong>BJTU Dining Simulation System</strong>
-          <span>北京交通大学食堂仿真与分流决策平台</span>
-        </div>
-      </RouterLink>
-
-      <nav class="nav-links">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="nav-link"
-          :class="{ active: route.path === item.to }"
-        >
-          <component :is="item.icon" class="nav-icon" />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
+  <header class="nav-shell">
+    <div class="nav-brand">
+      <span class="nav-kicker">BJTU Dining Simulation</span>
+      <RouterLink to="/" class="nav-title">v0.4 Flow Console</RouterLink>
     </div>
+    <nav class="nav-links">
+      <RouterLink to="/" class="nav-link">概览</RouterLink>
+      <RouterLink to="/workspace" class="nav-link">工作台</RouterLink>
+    </nav>
   </header>
 </template>
 
 <script setup>
-import { DataAnalysis, HomeFilled, Histogram, Setting, UserFilled } from '@element-plus/icons-vue'
-import { RouterLink, useRoute } from 'vue-router'
-
-const route = useRoute()
-
-const navItems = [
-  { to: '/', label: '首页', icon: HomeFilled },
-  { to: '/config', label: '参数配置', icon: Setting },
-  { to: '/flow', label: '人流快照', icon: UserFilled },
-  { to: '/statistics', label: '统计分析', icon: Histogram },
-  { to: '/recommendation', label: '分流对比', icon: DataAnalysis },
-]
+import { RouterLink } from 'vue-router'
 </script>
 
 <style scoped>
-.navbar {
+.nav-shell {
   position: sticky;
   top: 0;
-  z-index: 40;
-  border-bottom: 1px solid rgb(226 232 240 / 90%);
-  box-shadow: 0 10px 30px rgb(15 23 42 / 4%);
-  backdrop-filter: blur(14px);
-  background: rgb(255 255 255 / 94%);
-}
-
-.navbar-shell {
-  display: grid;
-  grid-template-columns: auto 1fr;
+  z-index: 20;
+  display: flex;
   align-items: center;
-  gap: 28px;
-  width: min(1440px, calc(100% - 64px));
-  min-height: 72px;
-  margin: 0 auto;
+  justify-content: space-between;
+  padding: 18px 28px;
+  backdrop-filter: blur(18px);
+  background: rgba(12, 18, 26, 0.68);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.brand-logo {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  color: #2563eb;
-  border: 2px solid #2563eb;
-  background: linear-gradient(180deg, #ffffff 0%, #edf4ff 100%);
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-}
-
-.brand-copy {
-  display: grid;
+.nav-brand {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
-.brand-copy strong {
-  color: #0f172a;
-  font-size: 17px;
-  line-height: 1.2;
+.nav-kicker {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(215, 230, 255, 0.68);
 }
 
-.brand-copy span {
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.2;
+.nav-title {
+  color: #f7fbff;
+  text-decoration: none;
+  font-size: 22px;
+  font-weight: 700;
 }
 
 .nav-links {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 10px;
-  overflow: auto;
 }
 
 .nav-link {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 72px;
-  padding: 0 8px;
-  color: #475569;
-  font-size: 15px;
-  font-weight: 700;
-  transition: color 0.18s ease;
+  padding: 10px 14px;
+  border-radius: 999px;
+  color: rgba(238, 244, 255, 0.82);
+  text-decoration: none;
+  transition: 180ms ease;
 }
 
-.nav-link::after {
-  position: absolute;
-  right: 8px;
-  bottom: 0;
-  left: 8px;
-  height: 3px;
-  border-radius: 999px 999px 0 0;
-  background: transparent;
-  content: '';
+.nav-link.router-link-active {
+  color: #0a1320;
+  background: linear-gradient(135deg, #ffd166, #ff8f5a);
 }
 
-.nav-link:hover,
-.nav-link.active {
-  color: #2563eb;
-}
-
-.nav-link.active::after {
-  background: #2563eb;
-}
-
-.nav-icon {
-  width: 19px;
-  height: 19px;
-}
-
-@media (max-width: 1280px) {
-  .navbar-shell {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    width: min(100%, calc(100% - 36px));
-    padding: 8px 0;
+@media (max-width: 720px) {
+  .nav-shell {
+    padding: 16px 18px;
   }
 
-  .nav-links {
-    justify-content: flex-start;
-  }
-
-  .nav-link {
-    min-height: 44px;
-    padding: 0 14px;
-    border-radius: 999px;
-  }
-
-  .nav-link.active {
-    background: #eff6ff;
-  }
-
-  .nav-link::after {
-    display: none;
+  .nav-title {
+    font-size: 18px;
   }
 }
 </style>

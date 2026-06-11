@@ -1,6 +1,11 @@
 package com.bjtu.dining.taska.controller;
 
 import com.bjtu.dining.common.ApiResponse;
+import com.bjtu.dining.recommendation.model.AdvancedMetrics;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePreviewRequest;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurveResponse;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.MinuteMetricsResponse;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.WindowPressureResponse;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunRequest;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunResult;
@@ -35,6 +40,13 @@ public class SimulationController {
         return ApiResponse.ok(simulationService.runSimulationWithDiversion(request));
     }
 
+    @PostMapping("/arrival-curve-preview")
+    public ApiResponse<ArrivalCurveResponse> arrivalCurvePreview(
+            @RequestBody(required = false) ArrivalCurvePreviewRequest request
+    ) {
+        return ApiResponse.ok(simulationService.previewArrivalCurve(request));
+    }
+
     @GetMapping("/{runId}")
     public ApiResponse<SimulationRunResult> getRunResult(@PathVariable long runId) {
         return ApiResponse.ok(simulationService.getRunResult(runId));
@@ -48,5 +60,25 @@ public class SimulationController {
     @GetMapping("/{runId}/metrics")
     public ApiResponse<MetricsResponse> metrics(@PathVariable long runId) {
         return ApiResponse.ok(simulationService.metrics(runId));
+    }
+
+    @GetMapping("/{runId}/arrival-curve")
+    public ApiResponse<ArrivalCurveResponse> arrivalCurve(@PathVariable long runId) {
+        return ApiResponse.ok(simulationService.arrivalCurve(runId));
+    }
+
+    @GetMapping("/{runId}/minute-metrics")
+    public ApiResponse<MinuteMetricsResponse> minuteMetrics(@PathVariable long runId) {
+        return ApiResponse.ok(simulationService.minuteMetrics(runId));
+    }
+
+    @GetMapping("/{runId}/window-pressure")
+    public ApiResponse<WindowPressureResponse> windowPressure(@PathVariable long runId) {
+        return ApiResponse.ok(simulationService.windowPressure(runId));
+    }
+
+    @GetMapping("/{runId}/advanced-metrics")
+    public ApiResponse<AdvancedMetrics> advancedMetrics(@PathVariable long runId) {
+        return ApiResponse.ok(simulationService.advancedMetrics(runId));
     }
 }

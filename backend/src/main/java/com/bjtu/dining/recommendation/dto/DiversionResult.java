@@ -6,6 +6,8 @@ public record DiversionResult(
         Long runId,
         int minute,
         List<DiversionSuggestionItem> suggestions,
-        String reason
+        String reason,
+        DiversionStrategyParameters strategySnapshot,
+        EstimatedSystemBenefit estimatedSystemBenefit
 ) {
 }

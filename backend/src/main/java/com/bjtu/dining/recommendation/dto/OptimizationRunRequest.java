@@ -3,7 +3,7 @@ package com.bjtu.dining.recommendation.dto;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 
-public record DiversionComparisonRequest(
+public record OptimizationRunRequest(
         @NotNull(message = "baseRunId cannot be null")
         Long baseRunId,
 
@@ -11,9 +11,13 @@ public record DiversionComparisonRequest(
 
         String targetCrowdLevel,
 
-        Boolean autoRunCompare,
+        String method,
+
+        Integer iterationCount,
+
+        Long randomSeed,
 
         @Valid
-        DiversionStrategyParameters strategyParameters
+        DiversionStrategyParameters initialParameters
 ) {
 }

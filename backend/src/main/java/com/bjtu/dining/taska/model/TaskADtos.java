@@ -1,5 +1,6 @@
 package com.bjtu.dining.taska.model;
 
+import com.bjtu.dining.recommendation.dto.DiversionStrategyParameters;
 import java.util.List;
 
 public final class TaskADtos {
@@ -85,7 +86,8 @@ public final class TaskADtos {
             Long baseRunId,
             Integer minute,
             String targetCrowdLevel,
-            List<DiversionSuggestion> diversionSuggestions
+            List<DiversionSuggestion> diversionSuggestions,
+            DiversionStrategyParameters strategyParameters
     ) {
     }
 

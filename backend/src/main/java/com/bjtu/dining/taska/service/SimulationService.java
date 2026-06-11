@@ -3,6 +3,9 @@ package com.bjtu.dining.taska.service;
 import com.bjtu.dining.common.BadRequestException;
 import com.bjtu.dining.common.ResourceNotFoundException;
 import com.bjtu.dining.common.TagNormalizationService;
+import com.bjtu.dining.recommendation.dto.DiversionStrategyParameters;
+import com.bjtu.dining.recommendation.model.AdvancedMetrics;
+import com.bjtu.dining.recommendation.service.DiversionStrategySupport;
 import com.bjtu.dining.taska.model.TaskADtos.DiversionSuggestion;
 import com.bjtu.dining.taska.model.TaskADtos.EvaluationMetrics;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
@@ -17,6 +20,14 @@ import com.bjtu.dining.taska.model.TaskADtos.SimulationTimePoint;
 import com.bjtu.dining.taska.model.TaskADtos.TimelineResponse;
 import com.bjtu.dining.taska.model.TaskADtos.UserProfile;
 import com.bjtu.dining.taska.model.TaskADtos.UserProfilePreset;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePoint;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePreviewRequest;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurveResponse;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.MinuteMetricPoint;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.MinuteMetricsResponse;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.WindowPressureItem;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.WindowPressurePoint;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.WindowPressureResponse;
 import com.bjtu.dining.taska.service.SeedDataService.ArrivalRuleSeed;
 import com.bjtu.dining.taska.service.SeedDataService.DishSeed;
 import com.bjtu.dining.taska.service.SeedDataService.RestaurantSeed;
@@ -71,6 +82,7 @@ public class SimulationService {
     private final AtomicLong runIdGenerator = new AtomicLong(10000);
     private final Map<Long, SimulationRunResult> runStore = new ConcurrentHashMap<>();
     private final Map<Long, List<DinerProfile>> cohortStore = new ConcurrentHashMap<>();
+    private final Map<Long, DiversionRunMeta> diversionMetaStore = new ConcurrentHashMap<>();
 
     public SimulationService(
             SeedDataService seedDataService,
@@ -132,6 +144,7 @@ public class SimulationService {
         DiversionPlan diversionPlan = buildDiversionPlan(
                 diversionStartMinute,
                 request.diversionSuggestions(),
+                request.strategyParameters(),
                 seedDataService.seedData()
         );
         return simulateRun(profile, scenario, dinerCohort, diversionPlan, baseRun.runId());
@@ -153,6 +166,119 @@ public class SimulationService {
     public MetricsResponse metrics(long runId) {
         SimulationRunResult result = getRunResult(runId);
         return new MetricsResponse(runId, result.metrics());
+    }
+
+    public ArrivalCurveResponse previewArrivalCurve(ArrivalCurvePreviewRequest request) {
+        UserProfile profile = normalizeProfile(request == null ? null : request.profile());
+        SimulationScenario scenario = normalizeScenario(request == null ? null : request.scenario());
+        validate(profile, scenario);
+        SeedData seedData = seedDataService.seedData();
+        int dinerCount = Math.max(1, scenario.virtualUserCount());
+        double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel()) * scenario.weatherFactor() * scenario.eventFactor();
+        ArrivalRuleSeed arrivalRule = arrivalRuleFor(seedData, scenario.mealPeriod());
+        double[] weights = arrivalCurveGenerator.buildMinuteWeights(
+                arrivalRule,
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure
+        );
+        List<Integer> sampledMinutes = arrivalCurveGenerator.generateArrivalMinutes(
+                arrivalRule,
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure,
+                dinerCount,
+                new Random(scenario.randomSeed())
+        );
+        return new ArrivalCurveResponse(
+                null,
+                scenario.mealPeriod(),
+                scenario.durationMinutes(),
+                dinerCount,
+                buildArrivalCurvePoints(weights, toMinuteCounts(sampledMinutes), scenario.durationMinutes())
+        );
+    }
+
+    public ArrivalCurveResponse arrivalCurve(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        List<DinerProfile> diners = cohortStore.getOrDefault(runId, List.of());
+        Map<Integer, Integer> minuteCounts = toMinuteCounts(diners.stream().map(DinerProfile::arrivalMinute).toList());
+        SeedData seedData = seedDataService.seedData();
+        SimulationScenario scenario = normalizeScenario(result.scenario());
+        double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel()) * scenario.weatherFactor() * scenario.eventFactor();
+        double[] weights = arrivalCurveGenerator.buildMinuteWeights(
+                arrivalRuleFor(seedData, scenario.mealPeriod()),
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure
+        );
+        return new ArrivalCurveResponse(
+                runId,
+                scenario.mealPeriod(),
+                scenario.durationMinutes(),
+                diners.size(),
+                buildArrivalCurvePoints(weights, minuteCounts, scenario.durationMinutes())
+        );
+    }
+
+    public MinuteMetricsResponse minuteMetrics(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        List<DinerProfile> diners = cohortStore.getOrDefault(runId, List.of());
+        Map<Integer, Integer> minuteCounts = toMinuteCounts(diners.stream().map(DinerProfile::arrivalMinute).toList());
+        List<MinuteMetricPoint> points = result.timePoints().stream()
+                .map(point -> toMinuteMetricPoint(point, minuteCounts.getOrDefault(point.minute(), 0)))
+                .toList();
+        return new MinuteMetricsResponse(runId, points);
+    }
+
+    public WindowPressureResponse windowPressure(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        List<WindowPressurePoint> points = result.timePoints().stream()
+                .map(this::toWindowPressurePoint)
+                .toList();
+        return new WindowPressureResponse(runId, points);
+    }
+
+    public AdvancedMetrics advancedMetrics(long runId) {
+        SimulationRunResult result = getRunResult(runId);
+        MinuteMetricsResponse minuteMetrics = minuteMetrics(runId);
+        int stepMinutes = Math.max(1, result.scenario().stepMinutes());
+        int overloadedWindowMinutes = minuteMetrics.points().stream()
+                .mapToInt(item -> item.overloadedWindowCount() * stepMinutes)
+                .sum();
+        int extremeWindowMinutes = minuteMetrics.points().stream()
+                .mapToInt(item -> item.extremeWindowCount() * stepMinutes)
+                .sum();
+        double peakWait10m = peakWait10m(minuteMetrics.points(), stepMinutes);
+        double queueImbalanceIndex = round(minuteMetrics.points().stream()
+                .mapToDouble(MinuteMetricPoint::queueImbalanceIndex)
+                .average()
+                .orElse(0.0));
+        DiversionRunMeta diversionMeta = diversionMetaStore.get(runId);
+        int acceptedDiversionCount = diversionMeta == null ? 0 : diversionMeta.acceptedDiversionCount();
+        int crossRestaurantDiversionCount = diversionMeta == null ? 0 : diversionMeta.crossRestaurantDiversionCount();
+        double benefitPerAcceptedDiversion = 0.0;
+        if (diversionMeta != null && result.compareSourceRunId() != null) {
+            SimulationRunResult baseRun = runStore.get(result.compareSourceRunId());
+            if (baseRun != null && acceptedDiversionCount > 0) {
+                double improvement = Math.max(0.0, baseRun.metrics().avgWaitMinutes() - result.metrics().avgWaitMinutes())
+                        + Math.max(0, baseRun.metrics().maxQueueLength() - result.metrics().maxQueueLength()) * 0.25
+                        + Math.max(0, baseRun.metrics().extremeWindowCount() - result.metrics().extremeWindowCount()) * 1.2;
+                benefitPerAcceptedDiversion = round(improvement / acceptedDiversionCount);
+            }
+        }
+        return new AdvancedMetrics(
+                overloadedWindowMinutes,
+                extremeWindowMinutes,
+                peakWait10m,
+                queueImbalanceIndex,
+                acceptedDiversionCount,
+                crossRestaurantDiversionCount,
+                benefitPerAcceptedDiversion
+        );
     }
 
     private SimulationRunResult simulateRun(
@@ -265,6 +391,15 @@ public class SimulationService {
         );
         runStore.put(runId, result);
         cohortStore.put(runId, List.copyOf(dinerCohort));
+        if (diversionPlan != null && diversionPlan.hasSuggestions()) {
+            diversionMetaStore.put(runId, new DiversionRunMeta(
+                    diversionPlan.strategySnapshot(),
+                    diversionPlan.acceptedDiversionCount(),
+                    diversionPlan.crossRestaurantDiversionCount()
+            ));
+        } else {
+            diversionMetaStore.remove(runId);
+        }
         return result;
     }
 
@@ -353,10 +488,16 @@ public class SimulationService {
     private DiversionPlan buildDiversionPlan(
             int diversionStartMinute,
             List<DiversionSuggestion> suggestions,
+            DiversionStrategyParameters strategyParameters,
             SeedData seedData
     ) {
+        DiversionStrategySupport.ResolvedParameters resolvedParameters =
+                DiversionStrategySupport.resolve(strategyParameters);
+        DiversionStrategyParameters strategySnapshot = DiversionStrategySupport.snapshot(resolvedParameters);
         List<ResolvedDiversionSuggestion> resolvedSuggestions = new ArrayList<>();
         Map<Long, List<ResolvedDiversionSuggestion>> suggestionsBySourceWindow = new LinkedHashMap<>();
+        int acceptedDiversionCount = 0;
+        int crossRestaurantDiversionCount = 0;
         for (DiversionSuggestion suggestion : suggestions) {
             if (suggestion == null) {
                 continue;
@@ -386,6 +527,10 @@ public class SimulationService {
             );
             resolvedSuggestions.add(resolved);
             suggestionsBySourceWindow.computeIfAbsent(resolved.fromWindowId(), ignored -> new ArrayList<>()).add(resolved);
+            acceptedDiversionCount += acceptedCount;
+            if (resolved.fromRestaurantId() != resolved.toRestaurantId()) {
+                crossRestaurantDiversionCount++;
+            }
         }
 
         if (resolvedSuggestions.isEmpty()) {
@@ -395,6 +540,10 @@ public class SimulationService {
         return new DiversionPlan(
                 diversionStartMinute,
                 List.copyOf(resolvedSuggestions),
+                resolvedParameters,
+                strategySnapshot,
+                acceptedDiversionCount,
+                crossRestaurantDiversionCount,
                 suggestionsBySourceWindow.entrySet().stream()
                         .collect(LinkedHashMap::new,
                                 (map, entry) -> map.put(entry.getKey(), List.copyOf(entry.getValue())),
@@ -604,6 +753,7 @@ public class SimulationService {
         int sourceQueueLength = queueLengths.getOrDefault(originalChoice.window().windowId(), 0);
         double sourceWait = windowWaitMinutes(originalChoice.window(), sourceQueueLength);
         double sourcePressure = queuePressureScore(originalChoice.window(), sourceQueueLength, sourceWait);
+        DiversionStrategySupport.ResolvedParameters strategy = diversionPlan.strategyParameters();
         for (ResolvedDiversionSuggestion candidate : candidates) {
             WindowSeed targetWindow = seedData.windowsById().get(candidate.toWindowId());
             if (targetWindow == null || !isWindowAvailable(targetWindow, mealPeriod, closedWindowIds)) {
@@ -615,22 +765,23 @@ public class SimulationService {
             }
             double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
             double targetPressure = queuePressureScore(targetWindow, targetQueueLength, targetWait);
-            if (targetPressure >= sourcePressure - 0.04 || targetWait > sourceWait + 1.5) {
+            double pressureBuffer = Math.max(0.03, strategy.strictTargetPressureBuffer() * 0.5);
+            if (targetPressure >= sourcePressure - pressureBuffer || targetWait > sourceWait + 1.5) {
                 continue;
             }
             double pressureGap = Math.max(0.0, sourcePressure - targetPressure);
             double effectiveAcceptanceRate = clamp(
-                    candidate.acceptanceRate() * diner.diversionAcceptanceBias() * 1.12
-                            + Math.min(0.22, Math.max(0.0, sourceWait - targetWait) * 0.022)
-                            + Math.min(0.16, pressureGap * 0.050)
-                            + 0.04,
+                    candidate.acceptanceRate() * diner.diversionAcceptanceBias() * 1.08
+                            + Math.min(0.24, Math.max(0.0, sourceWait - targetWait) * strategy.waitReductionAcceptanceWeight() * 0.9)
+                            + Math.min(0.18, pressureGap * strategy.pressureGapAcceptanceWeight() * 0.8)
+                            + strategy.acceptanceBaseRate() * 0.18,
                     0.10,
                     0.995
             );
             if (diner.diversionAcceptanceSample() > effectiveAcceptanceRate) {
                 continue;
             }
-            double opportunityScore = pressureGap * 0.52
+            double opportunityScore = pressureGap * strategy.pressureGapTransferWeight() * 0.26
                     + Math.max(0.0, sourceWait - targetWait) * 0.26
                     + effectiveAcceptanceRate * 0.22;
             if (opportunityScore > bestOpportunity) {
@@ -714,15 +865,21 @@ public class SimulationService {
             double targetWait = windowWaitMinutes(targetWindow, targetQueueLength);
             double sourcePressure = queuePressureScore(sourceWindow, sourceQueueLength, sourceWait);
             double targetPressure = queuePressureScore(targetWindow, targetQueueLength, targetWait);
-            if (targetPressure >= sourcePressure - 0.10) {
+            if (targetPressure >= sourcePressure - diversionPlan.strategyParameters().strictTargetPressureBuffer()) {
                 continue;
             }
 
             int targetCapacity = Math.max(0, maxReasonableTargetQueue(targetWindow) - targetQueueLength);
-            int balanceDrivenCount = Math.max(1, (int) Math.ceil(Math.max(0.0, sourceQueueLength - targetQueueLength) * 0.48));
+            int balanceDrivenCount = Math.max(
+                    1,
+                    (int) Math.ceil(Math.max(0.0, sourceQueueLength - targetQueueLength)
+                            * diversionPlan.strategyParameters().queueGapTransferWeight())
+            );
             int pressureDrivenCount = Math.max(
                     1,
-                    (int) Math.ceil(Math.max(0.0, sourcePressure - targetPressure) * Math.max(1.0, targetWindow.serviceRatePerMinute()) * 2.6)
+                    (int) Math.ceil(Math.max(0.0, sourcePressure - targetPressure)
+                            * Math.max(1.0, targetWindow.serviceRatePerMinute())
+                            * diversionPlan.strategyParameters().pressureGapTransferWeight())
             );
             int desiredTransfer = Math.max(
                     Math.max(balanceDrivenCount, pressureDrivenCount),
@@ -730,7 +887,10 @@ public class SimulationService {
             );
             int movedCount = Math.min(
                     sourceQueueLength,
-                    Math.min(suggestion.estimatedAcceptedCount(), Math.min(targetCapacity, desiredTransfer))
+                    Math.min(
+                            diversionPlan.strategyParameters().maxTransferCount(),
+                            Math.min(suggestion.estimatedAcceptedCount(), Math.min(targetCapacity, desiredTransfer))
+                    )
             );
             if (movedCount <= 0) {
                 continue;
@@ -887,6 +1047,112 @@ public class SimulationService {
         return "EXTREME";
     }
 
+    private List<ArrivalCurvePoint> buildArrivalCurvePoints(
+            double[] weights,
+            Map<Integer, Integer> minuteCounts,
+            int durationMinutes
+    ) {
+        List<ArrivalCurvePoint> points = new ArrayList<>(durationMinutes + 1);
+        for (int minute = 0; minute <= durationMinutes; minute++) {
+            double weight = minute < weights.length ? weights[minute] : 0.0;
+            points.add(new ArrivalCurvePoint(minute, minuteCounts.getOrDefault(minute, 0), round(weight)));
+        }
+        return List.copyOf(points);
+    }
+
+    private Map<Integer, Integer> toMinuteCounts(List<Integer> minutes) {
+        Map<Integer, Integer> counts = new LinkedHashMap<>();
+        for (Integer minute : minutes) {
+            counts.merge(minute, 1, Integer::sum);
+        }
+        return counts;
+    }
+
+    private MinuteMetricPoint toMinuteMetricPoint(SimulationTimePoint point, int arrivals) {
+        List<QueueState> openWindows = point.restaurants().stream()
+                .flatMap(restaurant -> restaurant.windows().stream())
+                .filter(window -> "OPEN".equals(window.status()))
+                .toList();
+        int totalQueueLength = openWindows.stream().mapToInt(QueueState::queueLength).sum();
+        int totalCurrentCount = point.restaurants().stream().mapToInt(RestaurantTimePoint::currentCount).sum();
+        double avgWindowWait = openWindows.stream().mapToDouble(QueueState::waitMinutes).average().orElse(0.0);
+        int overloadedWindowCount = (int) openWindows.stream()
+                .filter(window -> "BUSY".equals(window.crowdLevel()) || "EXTREME".equals(window.crowdLevel()))
+                .count();
+        int extremeWindowCount = (int) openWindows.stream()
+                .filter(window -> "EXTREME".equals(window.crowdLevel()))
+                .count();
+        return new MinuteMetricPoint(
+                point.minute(),
+                arrivals,
+                totalQueueLength,
+                totalCurrentCount,
+                round(avgWindowWait),
+                overloadedWindowCount,
+                extremeWindowCount,
+                round(queueImbalanceIndex(openWindows))
+        );
+    }
+
+    private WindowPressurePoint toWindowPressurePoint(SimulationTimePoint point) {
+        SeedData seedData = seedDataService.seedData();
+        List<WindowPressureItem> windows = new ArrayList<>();
+        for (RestaurantTimePoint restaurant : point.restaurants()) {
+            for (QueueState window : restaurant.windows()) {
+                WindowSeed windowSeed = seedData.windowsById().get(window.windowId());
+                if (windowSeed == null || !"OPEN".equals(window.status())) {
+                    continue;
+                }
+                windows.add(new WindowPressureItem(
+                        restaurant.restaurantId(),
+                        restaurant.name(),
+                        window.windowId(),
+                        window.name(),
+                        window.queueLength(),
+                        window.waitMinutes(),
+                        window.crowdLevel(),
+                        round(queuePressureScore(windowSeed, window.queueLength(), window.waitMinutes()))
+                ));
+            }
+        }
+        return new WindowPressurePoint(point.minute(), List.copyOf(windows));
+    }
+
+    private double peakWait10m(List<MinuteMetricPoint> points, int stepMinutes) {
+        if (points.isEmpty()) {
+            return 0.0;
+        }
+        int windowSize = Math.max(1, (int) Math.ceil(10.0 / stepMinutes));
+        double best = 0.0;
+        for (int start = 0; start < points.size(); start++) {
+            int end = Math.min(points.size(), start + windowSize);
+            double average = points.subList(start, end).stream()
+                    .mapToDouble(MinuteMetricPoint::avgWindowWait)
+                    .average()
+                    .orElse(0.0);
+            best = Math.max(best, average);
+        }
+        return round(best);
+    }
+
+    private double queueImbalanceIndex(List<QueueState> windows) {
+        if (windows.isEmpty()) {
+            return 0.0;
+        }
+        double average = windows.stream().mapToInt(QueueState::queueLength).average().orElse(0.0);
+        if (average <= 0.0) {
+            return 0.0;
+        }
+        double variance = windows.stream()
+                .mapToDouble(window -> {
+                    double delta = window.queueLength() - average;
+                    return delta * delta;
+                })
+                .average()
+                .orElse(0.0);
+        return Math.sqrt(variance) / (average + 1.0);
+    }
+
     private Set<String> normalizeProfileTags(List<String> tags) {
         return tagNormalizationService.normalize(tags);
     }
@@ -989,6 +1255,10 @@ public class SimulationService {
     private record DiversionPlan(
             int startMinute,
             List<ResolvedDiversionSuggestion> suggestions,
+            DiversionStrategySupport.ResolvedParameters strategyParameters,
+            DiversionStrategyParameters strategySnapshot,
+            int acceptedDiversionCount,
+            int crossRestaurantDiversionCount,
             Map<Long, List<ResolvedDiversionSuggestion>> suggestionsBySourceWindow
     ) {
         private boolean hasSuggestions() {
@@ -1023,6 +1293,13 @@ public class SimulationService {
             double dishChoiceSample,
             double diversionAcceptanceSample,
             long decisionSeed
+    ) {
+    }
+
+    private record DiversionRunMeta(
+            DiversionStrategyParameters strategyParameters,
+            int acceptedDiversionCount,
+            int crossRestaurantDiversionCount
     ) {
     }
 }
