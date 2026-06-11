@@ -38,6 +38,8 @@ public class SeedDataService {
             List<Map<String, String>> restaurantRows = readCsv(dir.resolve("restaurants.csv"));
             List<Map<String, String>> windowRows = readCsv(dir.resolve("windows.csv"));
             List<Map<String, String>> dishRows = readCsv(dir.resolve("dishes.csv"));
+            List<Map<String, String>> arrivalRuleRows = readCsv(dir.resolve("arrival_rules.csv"));
+            List<Map<String, String>> tagMappingRows = readCsv(dir.resolve("tag_mappings.csv"));
 
             List<StudentSeed> students = studentRows.stream()
                     .map(this::toStudent)
@@ -54,6 +56,29 @@ public class SeedDataService {
                     .map(this::toDish)
                     .sorted(Comparator.comparingLong(DishSeed::dishId))
                     .toList();
+            Map<String, ArrivalRuleSeed> arrivalRulesByMealPeriod = arrivalRuleRows.stream()
+                    .map(this::toArrivalRule)
+                    .collect(Collectors.toMap(
+                            ArrivalRuleSeed::mealPeriod,
+                            item -> item,
+                            (left, right) -> right,
+                            LinkedHashMap::new
+                    ));
+            List<TagMappingSeed> tagMappings = tagMappingRows.stream()
+                    .map(this::toTagMapping)
+                    .toList();
+            Map<String, Set<String>> exactTagMappings = new LinkedHashMap<>();
+            List<TagKeywordMappingSeed> keywordTagMappings = new ArrayList<>();
+            for (TagMappingSeed mapping : tagMappings) {
+                if ("KEYWORD".equals(mapping.ruleType())) {
+                    String keyword = mapping.sourceTag().replace("*", "").trim();
+                    if (!keyword.isEmpty()) {
+                        keywordTagMappings.add(new TagKeywordMappingSeed(keyword, mapping.normalizedTags()));
+                    }
+                    continue;
+                }
+                exactTagMappings.put(mapping.sourceTag(), mapping.normalizedTags());
+            }
 
             Map<Long, RestaurantSeed> restaurantsById = restaurants.stream()
                     .collect(Collectors.toMap(RestaurantSeed::restaurantId, item -> item, (a, b) -> a, LinkedHashMap::new));
@@ -71,7 +96,11 @@ public class SeedDataService {
                     dishes,
                     restaurantsById,
                     windowsById,
-                    dishesByWindow
+                    dishesByWindow,
+                    arrivalRulesByMealPeriod,
+                    tagMappings,
+                    exactTagMappings,
+                    keywordTagMappings
             );
         } catch (IOException ex) {
             throw new IllegalStateException("无法读取成员 A 种子数据目录：" + dir.toAbsolutePath(), ex);
@@ -143,10 +172,7 @@ public class SeedDataService {
                 splitTags(row.get("preference_tags")),
                 number(row, "budget_min"),
                 number(row, "budget_max"),
-                integer(row, "waiting_tolerance_minutes"),
-                integer(row, "breakfast_arrival_minute"),
-                integer(row, "lunch_arrival_minute"),
-                integer(row, "dinner_arrival_minute")
+                integer(row, "waiting_tolerance_minutes")
         );
     }
 
@@ -186,6 +212,36 @@ public class SeedDataService {
                 integer(row, "prep_time_minutes"),
                 number(row, "popularity"),
                 splitTags(row.get("matching_tags"))
+        );
+    }
+
+    private ArrivalRuleSeed toArrivalRule(Map<String, String> row) {
+        List<Integer> centers = integerList(row.get("peak_centers_minutes"));
+        List<Double> weights = doubleList(row.get("peak_weights"));
+        List<Integer> deviations = integerList(row.get("standard_deviations"));
+        if (centers.size() != weights.size() || centers.size() != deviations.size()) {
+            throw new IllegalStateException("arrival_rules.csv peak columns are inconsistent for mealPeriod="
+                    + text(row, "meal_period"));
+        }
+        List<ArrivalPeakSeed> peaks = new ArrayList<>(centers.size());
+        for (int i = 0; i < centers.size(); i++) {
+            peaks.add(new ArrivalPeakSeed(centers.get(i), weights.get(i), deviations.get(i)));
+        }
+        return new ArrivalRuleSeed(
+                text(row, "meal_period"),
+                text(row, "simulation_start_time"),
+                pipeValues(row.get("course_reference_time")),
+                List.copyOf(peaks),
+                text(row, "description")
+        );
+    }
+
+    private TagMappingSeed toTagMapping(Map<String, String> row) {
+        return new TagMappingSeed(
+                text(row, "rule_type"),
+                text(row, "source_tag"),
+                splitTags(row.get("normalized_tags")),
+                text(row, "description")
         );
     }
 
@@ -258,8 +314,33 @@ public class SeedDataService {
         return row.getOrDefault(key, "");
     }
 
+    private List<String> pipeValues(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (String item : value.split("\\|")) {
+            if (!item.isBlank()) {
+                result.add(item.trim());
+            }
+        }
+        return List.copyOf(result);
+    }
+
     private int integer(Map<String, String> row, String key) {
         return (int) Math.round(number(row, key));
+    }
+
+    private List<Integer> integerList(String value) {
+        return pipeValues(value).stream()
+                .map(item -> (int) Math.round(Double.parseDouble(item)))
+                .toList();
+    }
+
+    private List<Double> doubleList(String value) {
+        return pipeValues(value).stream()
+                .map(Double::parseDouble)
+                .toList();
     }
 
     private double number(Map<String, String> row, String key) {
@@ -277,7 +358,11 @@ public class SeedDataService {
             List<DishSeed> dishes,
             Map<Long, RestaurantSeed> restaurantsById,
             Map<Long, WindowSeed> windowsById,
-            Map<Long, List<DishSeed>> dishesByWindow
+            Map<Long, List<DishSeed>> dishesByWindow,
+            Map<String, ArrivalRuleSeed> arrivalRulesByMealPeriod,
+            List<TagMappingSeed> tagMappings,
+            Map<String, Set<String>> exactTagMappings,
+            List<TagKeywordMappingSeed> keywordTagMappings
     ) {
     }
 
@@ -287,10 +372,37 @@ public class SeedDataService {
             Set<String> preferenceTags,
             double budgetMin,
             double budgetMax,
-            int waitingToleranceMinutes,
-            int breakfastArrivalMinute,
-            int lunchArrivalMinute,
-            int dinnerArrivalMinute
+            int waitingToleranceMinutes
+    ) {
+    }
+
+    public record ArrivalRuleSeed(
+            String mealPeriod,
+            String simulationStartTime,
+            List<String> courseReferenceTimes,
+            List<ArrivalPeakSeed> peaks,
+            String description
+    ) {
+    }
+
+    public record ArrivalPeakSeed(
+            int centerMinute,
+            double weight,
+            int standardDeviation
+    ) {
+    }
+
+    public record TagMappingSeed(
+            String ruleType,
+            String sourceTag,
+            Set<String> normalizedTags,
+            String description
+    ) {
+    }
+
+    public record TagKeywordMappingSeed(
+            String keyword,
+            Set<String> normalizedTags
     ) {
     }
 

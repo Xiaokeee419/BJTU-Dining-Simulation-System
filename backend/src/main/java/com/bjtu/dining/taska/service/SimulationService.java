@@ -2,6 +2,7 @@ package com.bjtu.dining.taska.service;
 
 import com.bjtu.dining.common.BadRequestException;
 import com.bjtu.dining.common.ResourceNotFoundException;
+import com.bjtu.dining.common.TagNormalizationService;
 import com.bjtu.dining.taska.model.TaskADtos.DiversionSuggestion;
 import com.bjtu.dining.taska.model.TaskADtos.EvaluationMetrics;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
@@ -16,6 +17,7 @@ import com.bjtu.dining.taska.model.TaskADtos.SimulationTimePoint;
 import com.bjtu.dining.taska.model.TaskADtos.TimelineResponse;
 import com.bjtu.dining.taska.model.TaskADtos.UserProfile;
 import com.bjtu.dining.taska.model.TaskADtos.UserProfilePreset;
+import com.bjtu.dining.taska.service.SeedDataService.ArrivalRuleSeed;
 import com.bjtu.dining.taska.service.SeedDataService.DishSeed;
 import com.bjtu.dining.taska.service.SeedDataService.RestaurantSeed;
 import com.bjtu.dining.taska.service.SeedDataService.SeedData;
@@ -65,13 +67,19 @@ public class SimulationService {
 
     private final SeedDataService seedDataService;
     private final ArrivalCurveGenerator arrivalCurveGenerator;
+    private final TagNormalizationService tagNormalizationService;
     private final AtomicLong runIdGenerator = new AtomicLong(10000);
     private final Map<Long, SimulationRunResult> runStore = new ConcurrentHashMap<>();
     private final Map<Long, List<DinerProfile>> cohortStore = new ConcurrentHashMap<>();
 
-    public SimulationService(SeedDataService seedDataService, ArrivalCurveGenerator arrivalCurveGenerator) {
+    public SimulationService(
+            SeedDataService seedDataService,
+            ArrivalCurveGenerator arrivalCurveGenerator,
+            TagNormalizationService tagNormalizationService
+    ) {
         this.seedDataService = seedDataService;
         this.arrivalCurveGenerator = arrivalCurveGenerator;
+        this.tagNormalizationService = tagNormalizationService;
     }
 
     public List<UserProfilePreset> userProfilePresets() {
@@ -400,21 +408,22 @@ public class SimulationService {
         List<StudentSeed> sampled = sample(sourcePool, scenario.virtualUserCount(), rng);
         Set<String> profileTags = normalizeProfileTags(profile.tasteTags());
         double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel()) * scenario.weatherFactor() * scenario.eventFactor();
+        ArrivalRuleSeed arrivalRule = arrivalRuleFor(seedData, scenario.mealPeriod());
+        List<Integer> arrivalMinutes = arrivalCurveGenerator.generateArrivalMinutes(
+                arrivalRule,
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure,
+                sampled.size(),
+                rng
+        );
 
         List<DinerProfile> diners = new ArrayList<>();
         for (int index = 0; index < sampled.size(); index++) {
             StudentSeed student = sampled.get(index);
-            int baseArrival = arrivalMinute(student, scenario.mealPeriod());
-            int arrivalMinute = arrivalCurveGenerator.generateArrivalMinute(
-                    baseArrival,
-                    scenario.mealPeriod(),
-                    scenario.dayType(),
-                    scenario.crowdLevel(),
-                    scenario.durationMinutes(),
-                    pressure,
-                    rng
-            );
-            Set<String> preferenceTags = new LinkedHashSet<>(student.preferenceTags());
+            int arrivalMinute = arrivalMinutes.get(index);
+            Set<String> preferenceTags = new LinkedHashSet<>(tagNormalizationService.normalize(student.preferenceTags()));
             preferenceTags.addAll(profileTags);
             double budgetMin = Math.max(0.0, profile.budgetMin() + randomInt(rng, -2, 2));
             double budgetMax = Math.max(budgetMin, profile.budgetMax() + randomInt(rng, -3, 4));
@@ -456,6 +465,14 @@ public class SimulationService {
         return List.copyOf(diners);
     }
 
+    private ArrivalRuleSeed arrivalRuleFor(SeedData seedData, String mealPeriod) {
+        ArrivalRuleSeed rule = seedData.arrivalRulesByMealPeriod().get(mealPeriod);
+        if (rule == null) {
+            throw new BadRequestException("scenario.mealPeriod", "arrival rule is missing for mealPeriod=" + mealPeriod);
+        }
+        return rule;
+    }
+
     private List<StudentSeed> chooseStudentPool(List<StudentSeed> students, String userType, int targetCount) {
         if (!Set.of("HURRY", "BUDGET_SENSITIVE").contains(userType)) {
             return students;
@@ -482,14 +499,6 @@ public class SimulationService {
             result.add(sourcePool.get(rng.nextInt(sourcePool.size())));
         }
         return result;
-    }
-
-    private int arrivalMinute(StudentSeed student, String mealPeriod) {
-        return switch (mealPeriod) {
-            case "BREAKFAST" -> student.breakfastArrivalMinute();
-            case "DINNER" -> student.dinnerArrivalMinute();
-            default -> student.lunchArrivalMinute();
-        };
     }
 
     private void serveQueues(
@@ -879,11 +888,7 @@ public class SimulationService {
     }
 
     private Set<String> normalizeProfileTags(List<String> tags) {
-        Set<String> result = new LinkedHashSet<>();
-        for (String tag : tags) {
-            result.add(TAG_ALIASES.getOrDefault(tag, tag));
-        }
-        return result;
+        return tagNormalizationService.normalize(tags);
     }
 
     private int resolvedAcceptedCount(DiversionSuggestion suggestion) {

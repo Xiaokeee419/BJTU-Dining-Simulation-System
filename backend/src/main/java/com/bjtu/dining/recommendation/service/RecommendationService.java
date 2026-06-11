@@ -2,6 +2,7 @@ package com.bjtu.dining.recommendation.service;
 
 import com.bjtu.dining.common.ApiException;
 import com.bjtu.dining.common.ResourceNotFoundException;
+import com.bjtu.dining.common.TagNormalizationService;
 import com.bjtu.dining.recommendation.dto.DiversionComparisonRequest;
 import com.bjtu.dining.recommendation.dto.DiversionComparisonResult;
 import com.bjtu.dining.recommendation.dto.DiversionRequest;
@@ -63,17 +64,20 @@ public class RecommendationService {
     private final SimulationProvider simulationProvider;
     private final RecommendationStore recommendationStore;
     private final SimulationService taskASimulationService;
+    private final TagNormalizationService tagNormalizationService;
 
     public RecommendationService(
             CsvSeedRepository seedRepository,
             SimulationProvider simulationProvider,
             RecommendationStore recommendationStore,
-            SimulationService taskASimulationService
+            SimulationService taskASimulationService,
+            TagNormalizationService tagNormalizationService
     ) {
         this.seedRepository = seedRepository;
         this.simulationProvider = simulationProvider;
         this.recommendationStore = recommendationStore;
         this.taskASimulationService = taskASimulationService;
+        this.tagNormalizationService = tagNormalizationService;
     }
 
     public RecommendationResult generate(RecommendationGenerateRequest request) {
@@ -83,7 +87,7 @@ public class RecommendationService {
 
         SimulationRunResult simulation = loadFinishedSimulation(request.runId());
         SimulationTimePoint timePoint = selectTimePoint(simulation, request.minute());
-        Set<String> preferredTags = TagMatcher.normalize(request.profile().tasteTags());
+        Set<String> preferredTags = tagNormalizationService.normalize(request.profile().tasteTags());
         Map<Long, WindowSnapshot> windowStateById = indexWindowState(timePoint);
 
         List<RecommendationItem> restaurants = rank(
@@ -324,12 +328,12 @@ public class RecommendationService {
 
             List<WindowParameter> windows = seedRepository.windowsByRestaurant(snapshot.restaurantId());
             Optional<WindowParameter> bestWindow = windows.stream()
-                    .max(Comparator.comparingDouble((WindowParameter window) -> TagMatcher.matchScore(preferredTags, window.matchingTags()))
+                    .max(Comparator.comparingDouble((WindowParameter window) -> tagNormalizationService.matchScore(preferredTags, window.matchingTags()))
                             .thenComparingDouble(WindowParameter::popularity));
             double avgWait = snapshot.windows().stream().mapToInt(WindowSnapshot::waitMinutes).average().orElse(0.0);
             String worstCrowd = worstCrowd(snapshot.windows());
             double tagScore = bestWindow
-                    .map(window -> TagMatcher.matchScore(preferredTags, window.matchingTags()))
+                    .map(window -> tagNormalizationService.matchScore(preferredTags, window.matchingTags()))
                     .orElse(55.0);
             double budgetScore = windows.stream()
                     .mapToDouble(window -> windowBudgetScore(window, profile))
@@ -384,7 +388,7 @@ public class RecommendationService {
                 continue;
             }
 
-            double tagScore = TagMatcher.matchScore(preferredTags, window.matchingTags());
+            double tagScore = tagNormalizationService.matchScore(preferredTags, window.matchingTags());
             double budgetScore = windowBudgetScore(window, profile);
             ScoreCard scoreCard = scoreCard(weights, factorScores(
                     "taste", tagScore,
@@ -429,7 +433,7 @@ public class RecommendationService {
             }
 
             int estimatedWait = state.waitMinutes() + dish.prepTimeMinutes();
-            double tagScore = TagMatcher.matchScore(preferredTags, dish.matchingTags());
+            double tagScore = tagNormalizationService.matchScore(preferredTags, dish.matchingTags());
             double budgetScore = dishBudgetScore(dish, profile);
             double prepScore = Math.max(0.0, 100.0 - dish.prepTimeMinutes() * 8.0);
             ScoreCard scoreCard = scoreCard(weights, factorScores(
@@ -858,11 +862,11 @@ public class RecommendationService {
     }
 
     private double windowTagSimilarity(WindowDiversionCandidate source, WindowDiversionCandidate target) {
-        Set<String> sourceTags = TagMatcher.normalize(source.matchingTags());
+        Set<String> sourceTags = tagNormalizationService.normalize(source.matchingTags());
         if (sourceTags.isEmpty()) {
             return 50.0;
         }
-        return TagMatcher.matchScore(sourceTags, target.matchingTags());
+        return tagNormalizationService.matchScore(sourceTags, target.matchingTags());
     }
 
     private int suggestedUserCount(
@@ -1199,7 +1203,7 @@ public class RecommendationService {
         if (preferredTags.isEmpty()) {
             return List.of();
         }
-        Set<String> candidate = TagMatcher.normalize(candidateTags);
+        Set<String> candidate = tagNormalizationService.normalize(candidateTags);
         return preferredTags.stream()
                 .filter(candidate::contains)
                 .sorted()
