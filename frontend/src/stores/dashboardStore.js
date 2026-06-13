@@ -1,7 +1,6 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  getCsvFlowCurves,
   getDashboardSimulation,
   getDataOverview,
   getDiversionSuggestions,
@@ -14,6 +13,7 @@ import {
   startOptimization as requestOptimization,
 } from '../api/dashboard'
 import { isCanceledRequest } from '../api/http'
+import { getStudentPoolSummary, previewArrivalCurve } from '../api/v04'
 import { resolvePeakTimePoint } from '../utils/simulationStats'
 
 export const useDashboardStore = defineStore('diversion-dashboard', () => {
@@ -23,12 +23,15 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   const windows = ref([])
   const dataOverview = ref(null)
   const flowCurve = ref(null)
+  const flowCurveError = ref('')
 
   const form = reactive({
     userType: 'STUDENT',
     mealPeriod: 'LUNCH',
     dayType: 'WEEKDAY',
     crowdLevel: 'BUSY',
+    weatherFactor: 1,
+    eventFactor: 1,
     virtualUserCount: 3000,
     durationMinutes: 90,
     randomSeed: 20260612,
@@ -46,6 +49,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   const optimizationJob = ref(null)
   const optimizationIterations = ref([])
   const optimizationBest = ref(null)
+  const lastRunMeta = ref(loadDashboardLastRunMeta())
 
   const loading = reactive({
     initialize: false,
@@ -83,18 +87,24 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     lastError.value = null
     const controller = replaceController('initialize')
     try {
-      const [options, overview] = await Promise.all([
+      const [options, overview, studentPool] = await Promise.all([
         getSimulationOptions({ signal: controller.signal }),
-        getDataOverview({ signal: controller.signal }),
+        getDataOverview({ signal: controller.signal }).catch(() => null),
+        getStudentPoolSummary({ signal: controller.signal }).catch(() => null),
       ])
       profiles.value = options.profiles || []
       scenarios.value = options.scenarios || []
       restaurants.value = options.restaurants || []
       windows.value = options.windows || []
-      dataOverview.value = overview
+      dataOverview.value = overview || buildDataOverview(options, studentPool)
       applyAvailableDefaults()
       rememberResponse('data-overview', overview)
       await refreshFlowCurve()
+
+      if (!currentRun.value) {
+        await restoreLastRun()
+      }
+
       requestStatus.value = 'READY'
     } catch (error) {
       handleError(error, '初始化数据读取失败')
@@ -110,20 +120,18 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     loading.flow = true
     const controller = replaceController('flow')
     try {
-      const result = await getCsvFlowCurves(
-        { mealPeriod: form.mealPeriod, bucketMinutes: 3 },
-        { signal: controller.signal },
-      )
+      const result = await previewArrivalCurve(buildSimulationPayload(), {
+        signal: controller.signal,
+      })
       flowCurve.value = result
-      if (lastError.value?.endpoint?.includes('/data/flow-curves')) {
-        lastError.value = null
-      }
-      rememberResponse('csv-flow-curve', result)
+      flowCurveError.value = ''
+      rememberResponse('arrival-curve-preview', result)
       touchCharts()
       return result
     } catch (error) {
-      handleError(error, 'CSV 人流曲线读取失败')
-      throw error
+      if (isCanceledRequest(error)) return null
+      flowCurveError.value = error?.message || '人流曲线预览加载失败'
+      return null
     } finally {
       finishOperation('flow', controller, () => {
         loading.flow = false
@@ -143,6 +151,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       )
       if (activeSession !== sessionId) return null
       currentRun.value = run
+      lastRunMeta.value = rememberDashboardRun(run)
       rememberResponse('simulation-run', run)
       touchCharts()
       await generateDiversion(activeSession)
@@ -186,6 +195,31 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       finishOperation('diversion', controller, () => {
         loading.diversion = false
       })
+    }
+  }
+
+  async function restoreLastRun() {
+    const runId = lastRunMeta.value?.runId
+    if (!runId) return null
+
+    try {
+      const run = await getDashboardSimulation(runId)
+      currentRun.value = run
+      requestStatus.value = 'SIMULATION_COMPLETED'
+      touchCharts()
+
+      try {
+        await generateDiversion()
+      } catch {
+        // Keep restored simulation data even if diversion suggestions fail.
+      }
+
+      return run
+    } catch {
+      currentRun.value = null
+      lastRunMeta.value = null
+      clearDashboardRememberedRun()
+      return null
     }
   }
 
@@ -350,8 +384,8 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
         mealPeriod: form.mealPeriod,
         dayType: form.dayType,
         crowdLevel: form.crowdLevel,
-        weatherFactor: 1,
-        eventFactor: 1,
+        weatherFactor: form.weatherFactor,
+        eventFactor: form.eventFactor,
         closedWindowIds: [],
         virtualUserCount: form.virtualUserCount,
         durationMinutes: form.durationMinutes,
@@ -384,9 +418,8 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       form.mealPeriod = scenario.mealPeriod
       form.dayType = scenario.dayType
       form.crowdLevel = scenario.crowdLevel
-      form.virtualUserCount = scenario.virtualUserCount
-      form.durationMinutes = scenario.durationMinutes
-      form.randomSeed = scenario.randomSeed
+      form.weatherFactor = scenario.weatherFactor ?? 1
+      form.eventFactor = scenario.eventFactor ?? 1
     }
   }
 
@@ -464,6 +497,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     windows,
     dataOverview,
     flowCurve,
+    flowCurveError,
     form,
     strategyParameters,
     optimizationSettings,
@@ -482,9 +516,11 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     targetCrowdLevel,
     peakPoint,
     staleDataRisk,
+    lastRunMeta,
     initialize,
     refreshFlowCurve,
     runBaseline,
+    restoreLastRun,
     generateDiversion,
     runComparison,
     startOptimization,
@@ -505,4 +541,59 @@ function defaultStrategyParameters() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
+}
+
+function buildDataOverview(options, studentPool) {
+  const windows = options?.windows || []
+  return {
+    sourceDirectory: 'data/task-a',
+    studentCount: studentPool?.totalStudents ?? null,
+    restaurantCount: options?.restaurants?.length ?? 0,
+    windowCount: windows.length,
+    openWindowCount: windows.filter(
+      (window) =>
+        window?.status !== 'CLOSED' &&
+        window?.open !== false &&
+        window?.isOpen !== false,
+    ).length,
+    userTypes: Object.keys(studentPool?.userTypeCounts || {}),
+  }
+}
+
+function rememberDashboardRun(run) {
+  const meta = {
+    runId: run?.runId,
+    createdAt: run?.createdAt || new Date().toISOString(),
+  }
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem('bjtu-dashboard-last-run', JSON.stringify(meta))
+  }
+  return meta
+}
+
+function loadDashboardLastRunMeta() {
+  if (typeof window === 'undefined') return null
+  const rawCandidates = [
+    window.localStorage.getItem('bjtu-dashboard-last-run'),
+    window.localStorage.getItem('bjtu-dining-last-run'),
+  ]
+
+  for (const raw of rawCandidates) {
+    if (!raw) continue
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed?.runId) {
+        return parsed
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return null
+}
+
+function clearDashboardRememberedRun() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem('bjtu-dashboard-last-run')
 }

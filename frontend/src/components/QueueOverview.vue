@@ -63,51 +63,73 @@
       <div class="restaurant-pane">
         <div class="subhead">
           <span>餐厅列表</span>
-          <span class="muted">点击柱子查看餐厅窗口排队</span>
+          <span class="muted">点击餐厅查看当前时间点下的窗口排队详情</span>
         </div>
-        <div class="restaurant-chart">
+
+        <div class="restaurant-overview-list">
           <button
             v-for="restaurant in restaurants"
             :key="restaurant.restaurantId"
             type="button"
-            class="restaurant-bar"
+            class="restaurant-overview-card"
             :class="{ active: restaurant.restaurantId === selectedRestaurant?.restaurantId }"
             @click="selectedRestaurantId = restaurant.restaurantId"
           >
-            <div class="restaurant-bar-value">
-              {{ restaurantQueueCount(restaurant) }}
+            <div class="restaurant-overview-head">
+              <div class="restaurant-overview-title">
+                <strong>{{ restaurant.name }}</strong>
+              </div>
+              <el-tag
+                :type="tagType(getRestaurantCrowdLevel(restaurant))"
+                effect="light"
+                size="small"
+              >
+                {{ crowdLabel(getRestaurantCrowdLevel(restaurant)) }}
+              </el-tag>
             </div>
-            <div class="restaurant-bar-track" aria-hidden="true">
+
+            <div class="restaurant-overview-body">
+              <div class="restaurant-overview-metric">
+                <span>总排队人数</span>
+                <strong>{{ getRestaurantQueueTotal(restaurant) }} 人</strong>
+              </div>
+              <div class="restaurant-overview-extra">
+                <span>开放窗口 {{ openWindowCount(restaurant) }}</span>
+                <span>平均等待 {{ averageWaitMinutes(restaurant) }} 分</span>
+              </div>
+            </div>
+
+            <div class="restaurant-overview-bar" aria-hidden="true">
               <i
-                :class="['restaurant-bar-fill', `tone-${restaurantBarTone(restaurant)}`]"
-                :style="{ height: restaurantBarHeight(restaurant) }"
+                :class="[
+                  'restaurant-overview-bar-fill',
+                  `tone-${restaurantQueueBarTone(restaurant)}`,
+                ]"
+                :style="{ width: restaurantQueueBarWidth(restaurant) }"
               ></i>
             </div>
-            <div class="restaurant-bar-name">
-              {{ restaurant.name }}
-            </div>
-            <div class="restaurant-bar-meta">
-              总排队人数
-            </div>
           </button>
+
+          <el-empty
+            v-if="!restaurants.length"
+            :image-size="72"
+            description="当前时刻暂无餐厅数据"
+          />
         </div>
       </div>
 
       <div class="window-pane">
         <template v-if="selectedRestaurant">
-          <div class="subhead">
+          <div class="subhead detail-subhead">
             <div>
               <strong class="detail-title">{{ selectedRestaurant.name }}</strong>
-              <span class="muted">
-                当前人数 {{ selectedRestaurant.currentCount }} / {{ selectedRestaurant.capacity }}
-              </span>
             </div>
             <el-tag
               class="density-tag"
-              :type="tagType(selectedRestaurant.crowdLevel)"
+              :type="tagType(getRestaurantCrowdLevel(selectedRestaurant))"
               effect="light"
             >
-              {{ crowdLabel(selectedRestaurant.crowdLevel) }}
+              {{ crowdLabel(getRestaurantCrowdLevel(selectedRestaurant)) }}
             </el-tag>
           </div>
 
@@ -117,60 +139,36 @@
               <strong>{{ openWindowCount(selectedRestaurant) }}</strong>
             </div>
             <div class="summary-item">
-              <span>总排队</span>
-              <strong>{{ restaurantQueueCount(selectedRestaurant) }} 人</strong>
+              <span>总排队人数</span>
+              <strong>{{ getRestaurantQueueTotal(selectedRestaurant) }} 人</strong>
             </div>
             <div class="summary-item">
               <span>平均等待</span>
               <strong>{{ averageWaitMinutes(selectedRestaurant) }} 分</strong>
             </div>
             <div class="summary-item">
-              <span>最大排队</span>
+              <span>最大排队人数</span>
               <strong>{{ maxQueueLength(selectedRestaurant) }} 人</strong>
             </div>
           </div>
 
           <div class="window-chart-panel">
             <div
-              v-if="openSelectedWindows.length"
+              v-if="selectedWindows.length"
               ref="windowQueueChartRef"
               class="window-queue-chart"
             ></div>
-            <p v-if="openSelectedWindows.length" class="window-chart-note">
-              按当前窗口排队人数排序，优先关注该餐厅最拥堵窗口。
+            <p v-if="selectedWindows.length" class="window-chart-note">
+              当前窗口排队人数会随时间轴同步更新，关闭窗口会以灰色显示。
             </p>
-            <div v-if="openSelectedWindows.length" class="window-bar-list">
-              <article
-                v-for="row in openSelectedWindows"
-                :key="row.windowId"
-                class="window-bar-card"
-              >
-                <div class="window-bar-head">
-                  <strong>{{ row.name }}</strong>
-                  <span>{{ row.queueLength }} 人</span>
-                </div>
-                <div class="window-bar-track" aria-hidden="true">
-                  <i
-                    :class="['window-bar-fill', `tone-${windowBarTone(row)}`]"
-                    :style="{ width: queueBarWidth(row) }"
-                  ></i>
-                </div>
-                <div class="window-bar-foot">
-                  <span>等待 {{ formatWaitMinutes(row.waitMinutes) }}</span>
-                  <el-tag :type="tagType(row.crowdLevel)" effect="light" size="small">
-                    {{ crowdLabel(row.crowdLevel) }}
-                  </el-tag>
-                </div>
-              </article>
-            </div>
             <el-empty
               v-else
               :image-size="72"
-              description="当前时刻没有开放窗口"
+              description="当前餐厅在这个时刻没有窗口数据"
             />
-
           </div>
         </template>
+
         <el-empty v-else :image-size="72" description="暂无餐厅数据" />
       </div>
     </div>
@@ -215,6 +213,7 @@ const selectedRestaurantId = ref(null)
 const localMinute = ref(null)
 const isPlaying = ref(false)
 const windowQueueChartRef = ref(null)
+
 let playTimer = null
 let windowQueueChart = null
 
@@ -249,10 +248,12 @@ const currentMinuteValue = computed(() => {
   if (preferredMinute !== null) {
     return clampMinute(preferredMinute)
   }
+
   const localValue = finiteMinute(localMinute.value)
   if (localValue !== null) {
     return clampMinute(localValue)
   }
+
   return resolveInitialMinute()
 })
 
@@ -265,13 +266,13 @@ const displayTimePoint = computed(() => {
 
 const restaurants = computed(() =>
   [...(displayTimePoint.value?.restaurants || [])].sort((left, right) => {
-    const queueDelta = restaurantQueueCount(right) - restaurantQueueCount(left)
+    const queueDelta = getRestaurantQueueTotal(right) - getRestaurantQueueTotal(left)
     if (queueDelta !== 0) return queueDelta
 
-    const waitDelta = averageWaitMinutes(right) - averageWaitMinutes(left)
-    if (waitDelta !== 0) return waitDelta
+    const loadDelta = getRestaurantLoadRate(right) - getRestaurantLoadRate(left)
+    if (loadDelta !== 0) return loadDelta
 
-    return Number(right.currentCount || 0) - Number(left.currentCount || 0)
+    return getRestaurantCurrentCount(right) - getRestaurantCurrentCount(left)
   }),
 )
 
@@ -284,7 +285,7 @@ const selectedRestaurant = computed(
 
 const selectedWindows = computed(() =>
   [...(selectedRestaurant.value?.windows || [])].sort((left, right) => {
-    const statusDelta = windowStatusRank(left) - windowStatusRank(right)
+    const statusDelta = Number(isWindowOpen(right)) - Number(isWindowOpen(left))
     if (statusDelta !== 0) return statusDelta
 
     const queueDelta = Number(right.queueLength || 0) - Number(left.queueLength || 0)
@@ -293,23 +294,15 @@ const selectedWindows = computed(() =>
     const waitDelta = Number(right.waitMinutes || 0) - Number(left.waitMinutes || 0)
     if (waitDelta !== 0) return waitDelta
 
-    return Number(right.servingCount || 0) - Number(left.servingCount || 0)
+    return String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
   }),
 )
 
-const openSelectedWindows = computed(() =>
-  selectedWindows.value.filter((window) => window.status !== 'CLOSED'),
+const maxRestaurantQueueTotal = computed(() =>
+  restaurants.value.length
+    ? Math.max(...restaurants.value.map((restaurant) => getRestaurantQueueTotal(restaurant)), 0)
+    : 0,
 )
-
-const selectedWindowMaxQueue = computed(() => {
-  const values = openSelectedWindows.value.map((window) => Number(window.queueLength || 0))
-  return values.length ? Math.max(...values, 0) : 0
-})
-
-const maxRestaurantQueueCount = computed(() => {
-  const values = restaurants.value.map((restaurant) => restaurantQueueCount(restaurant))
-  return values.length ? Math.max(...values, 0) : 0
-})
 
 watch(
   () => props.run,
@@ -336,6 +329,7 @@ watch(
       selectedRestaurantId.value = null
       return
     }
+
     const exists = list.some((restaurant) => restaurant.restaurantId === selectedRestaurantId.value)
     if (!exists) {
       selectedRestaurantId.value = list[0].restaurantId
@@ -345,7 +339,20 @@ watch(
 )
 
 watch(
-  () => [selectedRestaurant.value?.restaurantId, openSelectedWindows.value, currentMinuteValue.value],
+  () => ({
+    restaurantId: selectedRestaurant.value?.restaurantId ?? null,
+    minute: currentMinuteValue.value,
+    windows: selectedWindows.value.map((window) => [
+      window.windowId,
+      window.name,
+      window.queueLength,
+      window.waitMinutes,
+      window.status,
+      window.isOpen,
+      window.open,
+      window.crowdLevel,
+    ]),
+  }),
   () => nextTick(renderWindowQueueChart),
   { immediate: true, deep: true },
 )
@@ -415,10 +422,12 @@ function resolveInitialMinute() {
   if (explicitMinute !== null) {
     return clampMinute(explicitMinute)
   }
+
   const timePointMinute = finiteMinute(props.timePoint?.minute)
   if (timePointMinute !== null) {
     return timePointMinute
   }
+
   return clampMinute(startMinute.value)
 }
 
@@ -437,61 +446,99 @@ function formatWaitMinutes(value) {
   return `${numericValue.toFixed(1).replace(/\.0$/, '')} 分`
 }
 
-function restaurantQueueCount(restaurant) {
-  return restaurant?.windows?.reduce(
-    (sum, window) => sum + Number(window.queueLength || 0),
-    0,
-  ) || 0
+function getRestaurantCurrentCount(restaurant) {
+  return Number(
+    restaurant?.currentCount ??
+      restaurant?.currentPeople ??
+      restaurant?.currentUserCount ??
+      restaurant?.currentUsers ??
+      0,
+  )
 }
 
-function restaurantBarHeight(restaurant) {
-  const value = restaurantQueueCount(restaurant)
+function getRestaurantLoadRate(restaurant) {
+  const capacity = Number(restaurant?.capacity ?? restaurant?.totalCapacity ?? 0)
+  if (!capacity) return 0
+  return getRestaurantCurrentCount(restaurant) / capacity
+}
+
+function getRestaurantQueueTotal(restaurant) {
+  return (
+    restaurant?.windows?.reduce((sum, window) => sum + Number(window.queueLength || window.queueCount || 0), 0) ||
+    0
+  )
+}
+
+function restaurantQueueBarWidth(restaurant) {
+  const value = getRestaurantQueueTotal(restaurant)
   if (value <= 0) return '0%'
-  const maxQueue = Math.max(1, maxRestaurantQueueCount.value)
-  return `${Math.max(8, Math.round((value / maxQueue) * 100))}%`
+  const maxValue = Math.max(1, maxRestaurantQueueTotal.value)
+  return `${Math.max(10, Math.round((value / maxValue) * 100))}%`
 }
 
-function restaurantBarTone(restaurant) {
-  if (restaurant?.crowdLevel === 'EXTREME') return 'danger'
-  if (restaurant?.crowdLevel === 'BUSY') return 'warning'
-  return 'primary'
+function restaurantQueueBarTone(restaurant) {
+  return toneKey(getRestaurantCrowdLevel(restaurant))
+}
+
+function isWindowOpen(window) {
+  if (typeof window?.isOpen === 'boolean') return window.isOpen
+  if (typeof window?.open === 'boolean') return window.open
+  return window?.status !== 'CLOSED'
 }
 
 function openWindowCount(restaurant) {
-  return restaurant?.windows?.filter((window) => window.status !== 'CLOSED').length || 0
+  return restaurant?.windows?.filter((window) => isWindowOpen(window)).length || 0
 }
 
 function averageWaitMinutes(restaurant) {
-  const windows = restaurant?.windows?.filter((window) => window.status !== 'CLOSED') || []
+  const windows = restaurant?.windows?.filter((window) => isWindowOpen(window)) || []
   if (!windows.length) return 0
   const total = windows.reduce((sum, window) => sum + Number(window.waitMinutes || 0), 0)
   return Math.round((total / windows.length) * 10) / 10
 }
 
 function maxQueueLength(restaurant) {
-  const queues = restaurant?.windows?.map((window) => Number(window.queueLength || 0)) || []
+  const queues =
+    restaurant?.windows?.map((window) => Number(window.queueLength || window.queueCount || 0)) || []
   return queues.length ? Math.max(...queues) : 0
 }
 
-function queueBarWidth(window) {
-  const value = Number(window?.queueLength || 0)
-  if (value <= 0) return '0%'
-  const maxQueue = Math.max(1, selectedWindowMaxQueue.value)
-  return `${Math.max(8, Math.round((value / maxQueue) * 100))}%`
+function resolveCrowdLevel({ level, queue, loadRate }) {
+  if (['IDLE', 'NORMAL', 'BUSY', 'EXTREME'].includes(level)) {
+    return level
+  }
+
+  if (Number.isFinite(loadRate) && loadRate > 0) {
+    if (loadRate >= 0.9) return 'EXTREME'
+    if (loadRate >= 0.7) return 'BUSY'
+    if (loadRate >= 0.35) return 'NORMAL'
+    return 'IDLE'
+  }
+
+  if (queue <= 5) return 'IDLE'
+  if (queue <= 15) return 'NORMAL'
+  if (queue <= 30) return 'BUSY'
+  return 'EXTREME'
 }
 
-function windowBarTone(window) {
-  if (window?.crowdLevel === 'EXTREME') return 'danger'
-  if (window?.crowdLevel === 'BUSY') return 'warning'
-  return 'primary'
+function getRestaurantCrowdLevel(restaurant) {
+  return resolveCrowdLevel({
+    level: restaurant?.crowdLevel,
+    queue: getRestaurantQueueTotal(restaurant),
+    loadRate: getRestaurantLoadRate(restaurant),
+  })
 }
 
-function windowStatusRank(window) {
-  return window?.status === 'CLOSED' ? 1 : 0
+function getWindowCrowdLevel(window) {
+  return resolveCrowdLevel({
+    level: window?.crowdLevel,
+    queue: Number(window?.queueLength || window?.queueCount || 0),
+    loadRate: Number(window?.loadRate),
+  })
 }
 
 function renderWindowQueueChart() {
-  if (!openSelectedWindows.value.length) {
+  if (!selectedWindows.value.length) {
     windowQueueChart?.dispose()
     windowQueueChart = null
     return
@@ -503,76 +550,107 @@ function renderWindowQueueChart() {
     windowQueueChart = echarts.init(windowQueueChartRef.value)
   }
 
-  const rows = [...openSelectedWindows.value].sort((left, right) => {
-    const queueDelta = Number(right.queueLength || 0) - Number(left.queueLength || 0)
-    if (queueDelta !== 0) return queueDelta
-    return Number(right.waitMinutes || 0) - Number(left.waitMinutes || 0)
-  })
+  const rows = selectedWindows.value.map((window) => ({
+    ...window,
+    queueValue: Number(window.queueLength || window.queueCount || 0),
+    waitValue: Number(window.waitMinutes || 0),
+    openState: isWindowOpen(window),
+  }))
 
   windowQueueChart.setOption({
     animationDuration: 260,
     color: ['#2563eb'],
-    grid: { left: 18, right: 28, top: 8, bottom: 12, containLabel: true },
+    grid: { left: 36, right: 20, top: 24, bottom: 92, containLabel: true },
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' },
-      formatter: (params) => {
-        const row = params?.[0]?.data?.meta
+      trigger: 'item',
+      formatter: ({ data }) => {
+        const row = data?.meta
         if (!row) return ''
         return [
           row.name,
-          `排队 ${row.queueLength} 人`,
-          `等待 ${formatWaitMinutes(row.waitMinutes)}`,
+          `排队人数：${row.queueValue} 人`,
+          `平均等待：${formatWaitMinutes(row.waitValue)}`,
+          `状态：${row.openState ? '开放' : '关闭'}`,
         ].join('<br/>')
       },
     },
     xAxis: {
-      type: 'value',
-      name: '排队人数',
-      minInterval: 1,
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: '#e5ebf3' } },
+      type: 'category',
+      data: rows.map((row) => row.name),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#d7dfeb' } },
+      axisLabel: {
+        interval: 0,
+        rotate: 35,
+        color: '#475569',
+        fontSize: 12,
+        formatter: wrapAxisLabel,
+      },
     },
     yAxis: {
-      type: 'category',
-      inverse: true,
-      data: rows.map((row) => row.name),
+      type: 'value',
+      minInterval: 1,
       axisLine: { show: false },
       axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#e9eef5' } },
       axisLabel: {
-        color: '#172033',
-        fontWeight: 700,
-        width: 170,
-        overflow: 'truncate',
+        color: '#64748b',
+      },
+      name: '排队人数',
+      nameTextStyle: {
+        color: '#64748b',
+        padding: [0, 0, 8, 0],
       },
     },
     series: [
       {
         type: 'bar',
-        barMaxWidth: 18,
-        label: {
-          show: true,
-          position: 'right',
-          color: '#475569',
-          fontWeight: 700,
-          formatter: ({ data }) => `${data.value} 人`,
-        },
+        barMaxWidth: 34,
         data: rows.map((row) => ({
-          value: Number(row.queueLength || 0),
+          value: row.queueValue,
           meta: row,
           itemStyle: {
-            color:
-              row.crowdLevel === 'EXTREME'
-                ? '#dc2626'
-                : row.crowdLevel === 'BUSY'
-                  ? '#2563eb'
-                  : '#60a5fa',
-            borderRadius: [0, 999, 999, 0],
+            color: resolveWindowBarColor(row),
+            borderRadius: [10, 10, 0, 0],
           },
         })),
+        label: {
+          show: true,
+          position: 'top',
+          color: '#334155',
+          fontWeight: 700,
+          formatter: ({ data }) => `${data.value}`,
+        },
       },
     ],
   })
+
+  resizeWindowQueueChart()
+}
+
+function wrapAxisLabel(value) {
+  const text = String(value || '')
+  if (text.length <= 8) return text
+  const parts = []
+  for (let index = 0; index < text.length; index += 8) {
+    parts.push(text.slice(index, index + 8))
+  }
+  return parts.join('\n')
+}
+
+function resolveWindowBarColor(window) {
+  if (!window.openState) return '#cbd5e1'
+
+  switch (toneKey(getWindowCrowdLevel(window))) {
+    case 'danger':
+      return '#dc2626'
+    case 'warning':
+      return '#f59e0b'
+    case 'primary':
+      return '#2563eb'
+    default:
+      return '#60a5fa'
+  }
 }
 
 function resizeWindowQueueChart() {
@@ -584,13 +662,17 @@ function crowdLabel(level) {
     {
       IDLE: '空闲',
       NORMAL: '正常',
-      BUSY: '繁忙',
-      EXTREME: '极拥挤',
-    }[level] || level
+      BUSY: '较忙',
+      EXTREME: '拥挤',
+    }[level] || '正常'
   )
 }
 
 function tagType(level) {
+  return toneKey(level)
+}
+
+function toneKey(level) {
   return (
     {
       IDLE: 'success',
@@ -669,8 +751,8 @@ function tagType(level) {
 
 .queue-body {
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(480px, 1.35fr);
-  gap: 16px;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 18px;
 }
 
 .restaurant-pane,
@@ -686,104 +768,135 @@ function tagType(level) {
   margin-bottom: 12px;
 }
 
-.restaurant-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  max-height: 420px;
-  min-height: 420px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 10px 4px 2px 0;
+.detail-subhead {
+  align-items: flex-start;
 }
 
-.restaurant-bar {
+.restaurant-overview-list {
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto auto;
-  gap: 8px;
-  align-items: end;
-  flex: 0 0 74px;
-  height: 100%;
-  padding: 10px 8px 12px;
+  gap: 12px;
+  height: 540px;
+  max-height: 540px;
+  overflow-anchor: none;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.restaurant-overview-card {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 14px;
+  text-align: left;
   cursor: pointer;
-  background: #fff;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   transition:
     border-color 0.18s ease,
     box-shadow 0.18s ease,
     transform 0.18s ease;
 }
 
-.restaurant-bar:hover {
-  border-color: #cbd5e1;
-  box-shadow: 0 10px 20px rgb(23 32 51 / 6%);
+.restaurant-overview-card:hover {
+  border-color: #bfd1ea;
+  box-shadow: 0 12px 28px rgb(37 99 235 / 8%);
+  transform: translateY(-1px);
 }
 
-.restaurant-bar.active {
-  border-color: #9f1239;
-  background: linear-gradient(180deg, #fff8fb 0%, #ffffff 100%);
-  box-shadow: 0 0 0 1px rgb(159 18 57 / 12%);
+.restaurant-overview-card.active {
+  border-color: #2563eb;
+  background: linear-gradient(180deg, #f5f9ff 0%, #ffffff 100%);
+  box-shadow: 0 0 0 1px rgb(37 99 235 / 12%);
 }
 
-.restaurant-bar-value {
+.restaurant-overview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.restaurant-overview-title {
+  display: grid;
+  gap: 6px;
+}
+
+.restaurant-overview-title strong {
   color: #172033;
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1;
-  text-align: center;
+  font-size: 16px;
+  line-height: 1.3;
 }
 
-.restaurant-bar-track {
-  position: relative;
+.restaurant-overview-title span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.restaurant-overview-body {
   display: flex;
   align-items: flex-end;
-  justify-content: center;
-  height: 100%;
-  border-radius: 999px 999px 6px 6px;
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.restaurant-bar-fill {
+.restaurant-overview-bar {
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #eef3f8 0%, #e5ebf3 100%);
+}
+
+.restaurant-overview-bar-fill {
   display: block;
-  width: 28px;
-  min-height: 0;
-  border-radius: 999px 999px 6px 6px;
-  transition: height 0.24s ease;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.24s ease;
 }
 
-.restaurant-bar-fill.tone-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+.restaurant-overview-bar-fill.tone-primary {
+  background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
 }
 
-.restaurant-bar-fill.tone-warning {
-  background: linear-gradient(180deg, #fbbf24 0%, #f97316 100%);
+.restaurant-overview-bar-fill.tone-warning {
+  background: linear-gradient(90deg, #fbbf24 0%, #f59e0b 100%);
 }
 
-.restaurant-bar-fill.tone-danger {
-  background: linear-gradient(180deg, #fb7185 0%, #dc2626 100%);
+.restaurant-overview-bar-fill.tone-danger {
+  background: linear-gradient(90deg, #fb7185 0%, #dc2626 100%);
 }
 
-.restaurant-bar-name {
-  color: #172033;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1.35;
-  text-align: center;
-  word-break: break-all;
+.restaurant-overview-bar-fill.tone-success {
+  background: linear-gradient(90deg, #86efac 0%, #22c55e 100%);
 }
 
-.restaurant-bar-meta {
+.restaurant-overview-metric span,
+.restaurant-overview-extra span {
+  display: block;
   color: #64748b;
-  font-size: 11px;
-  font-weight: 700;
-  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.restaurant-overview-metric strong {
+  display: block;
+  margin-top: 6px;
+  color: #172033;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.restaurant-overview-extra {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
 }
 
 .detail-title {
   display: block;
   margin-bottom: 4px;
-  font-size: 16px;
+  font-size: 18px;
   color: #172033;
 }
 
@@ -791,14 +904,14 @@ function tagType(level) {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .summary-item {
-  padding: 12px 10px;
+  padding: 13px 12px;
   border: 1px solid #e8edf4;
-  border-radius: 8px;
-  background: #f8fafc;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
 }
 
 .summary-item span {
@@ -811,98 +924,41 @@ function tagType(level) {
 
 .summary-item strong {
   color: #172033;
-  font-size: 18px;
+  font-size: 20px;
+  line-height: 1.1;
 }
 
 .window-chart-panel {
-  display: grid;
-  gap: 14px;
-}
-
-.window-queue-chart {
-  height: 320px;
-}
-
-.window-chart-note {
-  margin: -4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.window-bar-list {
-  display: none;
-}
-
-.window-bar-card {
-  padding: 12px 14px;
+  padding: 14px 16px 10px;
   border: 1px solid #e8edf4;
-  border-radius: 8px;
+  border-radius: 14px;
   background: #fff;
 }
 
-.window-bar-head,
-.window-bar-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.window-queue-chart {
+  height: 360px;
 }
 
-.window-bar-head {
-  margin-bottom: 10px;
-}
-
-.window-bar-head strong {
-  color: #172033;
-  font-size: 14px;
-}
-
-.window-bar-head span,
-.window-bar-foot span {
-  color: #657084;
+.window-chart-note {
+  margin: 8px 0 0;
+  color: #64748b;
   font-size: 12px;
-  font-weight: 700;
-}
-
-.window-bar-track {
-  height: 12px;
-  border-radius: 999px;
-  background: #edf2f7;
-  overflow: hidden;
-}
-
-.window-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  transition: width 0.24s ease;
-}
-
-.window-bar-fill.tone-primary {
-  background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
-}
-
-.window-bar-fill.tone-warning {
-  background: linear-gradient(90deg, #fbbf24 0%, #f97316 100%);
-}
-
-.window-bar-fill.tone-danger {
-  background: linear-gradient(90deg, #fb7185 0%, #dc2626 100%);
-}
-
-.window-bar-foot {
-  margin-top: 10px;
+  font-weight: 600;
 }
 
 @media (max-width: 1080px) {
   .queue-header,
-  .timeline-meta {
+  .timeline-meta,
+  .restaurant-overview-body {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .header-meta {
+    justify-items: start;
+  }
+
+  .restaurant-overview-extra {
     justify-items: start;
   }
 }
@@ -912,22 +968,16 @@ function tagType(level) {
     grid-template-columns: 1fr;
   }
 
+  .restaurant-overview-list {
+    max-height: 420px;
+  }
+
   .summary-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .timeline-scale {
     flex-wrap: wrap;
-  }
-
-  .restaurant-chart {
-    min-height: 320px;
-    max-height: 320px;
-  }
-
-  .restaurant-bar {
-    flex-basis: 68px;
-    grid-template-rows: auto minmax(150px, 1fr) auto auto;
   }
 }
 
@@ -939,6 +989,10 @@ function tagType(level) {
 
   .summary-strip {
     grid-template-columns: 1fr;
+  }
+
+  .window-queue-chart {
+    height: 320px;
   }
 }
 </style>

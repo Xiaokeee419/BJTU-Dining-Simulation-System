@@ -53,7 +53,7 @@
             <div class="compact-form">
               <label>
                 <span>就餐时段</span>
-                <el-select v-model="form.mealPeriod" @change="handleMealPeriodChange">
+                <el-select v-model="form.mealPeriod">
                   <el-option label="早餐" value="BREAKFAST" />
                   <el-option label="午餐" value="LUNCH" />
                   <el-option label="晚餐" value="DINNER" />
@@ -100,8 +100,8 @@
             </div>
             <dl class="source-details">
               <div>
-                <dt>人流来源</dt>
-                <dd>{{ flowCurve?.sourceFile || 'virtual_students.csv' }}</dd>
+                <dt>到达模型</dt>
+                <dd>arrival_rules.csv + 当前场景参数</dd>
               </div>
               <div>
                 <dt>支持人群</dt>
@@ -110,6 +110,18 @@
             </dl>
           </section>
         </div>
+
+        <QueueOverview
+          v-if="currentRun"
+          :run="currentRun"
+          v-model:minute="overviewMinute"
+          :initial-minute="peakPoint?.minute"
+        />
+        <section v-else class="dashboard-panel empty-panel">
+          <div class="empty-state">
+            运行基础仿真后，这里会展示高峰时刻的餐厅与窗口排队快照。
+          </div>
+        </section>
 
         <div class="kpi-grid">
           <MetricBlock
@@ -124,13 +136,19 @@
 
         <div class="chart-grid chart-grid-wide">
           <DashboardChart
-            title="CSV 原始人流入流曲线"
-            subtitle="由 virtual_students.csv 的到达分钟聚合，展示客流在高峰前后的分布。"
+            title="当前场景人流到达曲线"
+            subtitle="根据仿真人数、用餐时段、拥挤程度、天气和活动系数生成预计到达分布。"
             :option="flowCurveOption"
             :loading="loading.flow || loading.initialize"
-            :error="flowCurveError"
-            :empty="!flowCurve?.points?.length"
-          />
+            :empty="!arrivalCurvePoints.length"
+          >
+            <template #extra>
+              <span v-if="flowCurveError" class="curve-error-chip">
+                人流曲线预览加载失败
+              </span>
+              <span v-else class="curve-mode-chip">{{ arrivalCurveModeLabel }}</span>
+            </template>
+          </DashboardChart>
           <DashboardChart
             title="当前窗口压力排行"
             :subtitle="windowLoadSubtitle"
@@ -139,18 +157,6 @@
             :empty="!windowLoadRows.length"
           />
         </div>
-
-        <QueueOverview
-          v-if="currentRun"
-          :run="currentRun"
-          v-model:minute="overviewMinute"
-          :initial-minute="peakPoint?.minute"
-        />
-        <section v-else class="dashboard-panel empty-panel">
-          <div class="empty-state">
-            运行基础仿真后，这里会展示高峰时刻的餐厅与窗口排队快照。
-          </div>
-        </section>
       </section>
 
       <section class="dashboard-section">
@@ -429,7 +435,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import DashboardChart from '../components/DashboardChart.vue'
@@ -451,6 +457,7 @@ const store = useDashboardStore()
 const {
   dataOverview,
   flowCurve,
+  flowCurveError,
   form,
   strategyParameters,
   optimizationSettings,
@@ -518,10 +525,6 @@ const parameterFields = [
 ]
 
 const overviewMinute = ref(null)
-
-const flowCurveError = computed(() =>
-  lastError.value?.endpoint?.includes('/data/flow-curves') ? lastError.value.message : '',
-)
 
 const overviewTimePoint = computed(() => {
   if (!currentRun.value) return null
@@ -797,27 +800,87 @@ const optimizationNarrative = computed(() => {
   return `当前 best run #${best.compareRunId} 相比 baseline 平均等待${waitText}，最大队列${queueText}，高压窗口${crowdedText}。${extraQueueText}`
 })
 
+const actualArrivalCurvePoints = computed(() => {
+  const runCurve =
+    currentRun.value?.arrivalCurve ??
+    currentRun.value?.arrivalTimeSeries ??
+    currentRun.value?.arrivalPoints
+  const runPoints = Array.isArray(runCurve) ? runCurve : runCurve?.points
+  return runMatchesCurrentScenario(currentRun.value) && Array.isArray(runPoints)
+    ? runPoints
+    : []
+})
+
+const arrivalCurveModeLabel = computed(() =>
+  actualArrivalCurvePoints.value.length ? '本次仿真实际曲线' : '预计到达曲线',
+)
+
+const arrivalCurvePoints = computed(() => {
+  const source = actualArrivalCurvePoints.value.length
+    ? actualArrivalCurvePoints.value
+    : flowCurve.value?.points || []
+
+  let cumulativeArrivals = 0
+  return source.map((item) => {
+    const arrivals = Number(
+      item?.arrivals ?? item?.arrivalCount ?? item?.count ?? item?.value ?? 0,
+    )
+    cumulativeArrivals =
+      item?.cumulativeArrivals == null
+        ? cumulativeArrivals + arrivals
+        : Number(item.cumulativeArrivals)
+    return {
+      minute: Number(item?.minute || 0),
+      arrivals,
+      cumulativeArrivals,
+    }
+  })
+})
+
+const arrivalCurvePopulation = computed(
+  () =>
+    Number(
+      runMatchesCurrentScenario(currentRun.value)
+        ? currentRun.value?.scenario?.virtualUserCount
+        : flowCurve.value?.totalArrivals,
+    ) || Number(form.virtualUserCount || 0),
+)
+
 const flowCurveOption = computed(() => ({
   color: ['#0160a8', '#8fa8c7'],
-  tooltip: { trigger: 'axis' },
-  legend: { top: 8, data: ['每桶到达人数', '累计到达人数'] },
+  tooltip: {
+    trigger: 'axis',
+    formatter: (params) => {
+      const minute = params?.[0]?.axisValueLabel || params?.[0]?.name || '0m'
+      const values = Object.fromEntries(
+        (params || []).map((item) => [item.seriesName, Number(item.value || 0)]),
+      )
+      return [
+        `第 ${String(minute).replace('m', '')} 分钟`,
+        `每分钟到达人数：${values['每分钟到达人数'] ?? 0} 人`,
+        `累计到达人数：${values['累计到达人数'] ?? 0} 人`,
+        `当前仿真人数配置：${arrivalCurvePopulation.value} 人`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 8, data: ['每分钟到达人数', '累计到达人数'] },
   grid: { left: 52, right: 54, top: 48, bottom: 40 },
   xAxis: {
     type: 'category',
-    data: (flowCurve.value?.points || []).map((item) => `${item.minute}m`),
+    data: arrivalCurvePoints.value.map((item) => `${item.minute}m`),
     axisLabel: { interval: 'auto' },
   },
   yAxis: [
-    { type: 'value', name: '到达人数' },
+    { type: 'value', name: '每分钟到达人数' },
     { type: 'value', name: '累计人数' },
   ],
   series: [
     {
-      name: '每桶到达人数',
+      name: '每分钟到达人数',
       type: 'line',
       smooth: true,
       symbol: 'none',
-      data: (flowCurve.value?.points || []).map((item) => item.arrivals),
+      data: arrivalCurvePoints.value.map((item) => item.arrivals),
     },
     {
       name: '累计到达人数',
@@ -825,7 +888,7 @@ const flowCurveOption = computed(() => ({
       yAxisIndex: 1,
       symbol: 'none',
       lineStyle: { type: 'dashed' },
-      data: (flowCurve.value?.points || []).map((item) => item.cumulativeArrivals),
+      data: arrivalCurvePoints.value.map((item) => item.cumulativeArrivals),
     },
   ],
 }))
@@ -951,14 +1014,50 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => store.stopOptimizationPolling(true))
+let flowCurveRefreshTimer = null
 
-async function handleMealPeriodChange() {
-  try {
-    await store.refreshFlowCurve()
-  } catch (error) {
-    if (error?.code !== 'ERR_CANCELED') ElMessage.error(error.message)
+watch(
+  () => [
+    form.virtualUserCount,
+    form.mealPeriod,
+    form.dayType,
+    form.crowdLevel,
+    form.weatherFactor ?? 1,
+    form.eventFactor ?? 1,
+    form.durationMinutes,
+    form.randomSeed,
+  ],
+  () => {
+    if (flowCurveRefreshTimer != null) {
+      window.clearTimeout(flowCurveRefreshTimer)
+    }
+    flowCurveRefreshTimer = window.setTimeout(() => {
+      flowCurveRefreshTimer = null
+      store.refreshFlowCurve()
+    }, 250)
+  },
+)
+
+onBeforeUnmount(() => {
+  if (flowCurveRefreshTimer != null) {
+    window.clearTimeout(flowCurveRefreshTimer)
   }
+  store.stopOptimizationPolling(true)
+})
+
+function runMatchesCurrentScenario(run) {
+  const scenario = run?.scenario
+  if (!scenario) return false
+  return (
+    String(scenario.mealPeriod) === String(form.mealPeriod) &&
+    String(scenario.dayType) === String(form.dayType) &&
+    String(scenario.crowdLevel) === String(form.crowdLevel) &&
+    Number(scenario.weatherFactor ?? 1) === Number(form.weatherFactor ?? 1) &&
+    Number(scenario.eventFactor ?? 1) === Number(form.eventFactor ?? 1) &&
+    Number(scenario.virtualUserCount) === Number(form.virtualUserCount) &&
+    Number(scenario.durationMinutes) === Number(form.durationMinutes) &&
+    Number(scenario.randomSeed) === Number(form.randomSeed)
+  )
 }
 
 async function handleRun() {
@@ -1106,6 +1205,7 @@ function round(value, digits = 0) {
 <style scoped>
 .dashboard-page {
   min-height: 100%;
+  overflow-anchor: none;
 }
 
 .dashboard-topbar {
@@ -1285,6 +1385,26 @@ function round(value, digits = 0) {
 .source-badge {
   color: #166534;
   background: #dcfce7;
+}
+
+.curve-error-chip {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #b45309;
+  background: #fff7ed;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.curve-mode-chip {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: var(--color-secondary);
+  background: var(--color-secondary-soft);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .compact-form {

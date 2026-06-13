@@ -74,6 +74,7 @@ function resize() {
   border-radius: var(--radius-panel);
   background: #fff;
   box-shadow: var(--shadow-card);
+  overflow-anchor: none;
   overflow: hidden;
 }
 
@@ -102,6 +103,7 @@ function resize() {
 
 .dashboard-chart-surface,
 .chart-state {
+  height: v-bind("`${height}px`");
   min-height: v-bind("`${height}px`");
 }
 

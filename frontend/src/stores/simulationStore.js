@@ -130,6 +130,10 @@ export const useSimulationStore = defineStore('simulation', () => {
       }
 
       initialized.value = true
+
+      if (!currentRun.value) {
+        await restoreLastRun()
+      }
     })()
 
     try {
@@ -170,6 +174,31 @@ export const useSimulationStore = defineStore('simulation', () => {
       ElMessage.success('仿真完成')
     } finally {
       running.value = false
+    }
+  }
+
+  async function restoreLastRun() {
+    const runId = lastRunMeta.value?.runId
+    if (!runId) return null
+
+    try {
+      const run = await getSimulation(runId)
+      currentRun.value = run
+      currentMinute.value = resolveDefaultMinute(run)
+      selectedCompareMinute.value = currentMinute.value
+
+      try {
+        await refreshRecommendation({ minute: currentMinute.value })
+      } catch {
+        // Keep playback available even if recommendation refresh fails.
+      }
+
+      return run
+    } catch {
+      currentRun.value = null
+      lastRunMeta.value = null
+      clearRememberedRun()
+      return null
     }
   }
 
@@ -385,6 +414,7 @@ export const useSimulationStore = defineStore('simulation', () => {
     applyProfilePreset,
     applyScenarioPreset,
     runCurrentSimulation,
+    restoreLastRun,
     refreshRecommendation,
     setCurrentMinute,
     setSelectedCompareMinute,
@@ -491,4 +521,9 @@ function loadLastRunMeta() {
   } catch {
     return null
   }
+}
+
+function clearRememberedRun() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem('bjtu-dining-last-run')
 }
