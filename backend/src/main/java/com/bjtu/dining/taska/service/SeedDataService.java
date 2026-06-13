@@ -1,5 +1,9 @@
 package com.bjtu.dining.taska.service;
 
+import com.bjtu.dining.common.BadRequestException;
+import com.bjtu.dining.taska.model.DataOverviewResponse;
+import com.bjtu.dining.taska.model.FlowCurveResponse;
+import com.bjtu.dining.taska.model.FlowCurveResponse.FlowCurvePoint;
 import com.bjtu.dining.taska.model.TaskADtos.DishParameter;
 import com.bjtu.dining.taska.model.TaskADtos.RestaurantParameter;
 import com.bjtu.dining.taska.model.TaskADtos.WindowParameter;
@@ -15,8 +19,10 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -25,6 +31,7 @@ import org.springframework.stereotype.Service;
 public class SeedDataService {
     private final Path configuredSeedDir;
     private SeedData seedData;
+    private Path resolvedSeedDir;
 
     public SeedDataService(@Value("${app.seed-data-dir:../data/task-a}") String seedDataDir) {
         this.configuredSeedDir = Path.of(seedDataDir);
@@ -33,6 +40,7 @@ public class SeedDataService {
     @PostConstruct
     public void load() {
         Path dir = resolveSeedDir();
+        this.resolvedSeedDir = dir.toAbsolutePath().normalize();
         try {
             List<Map<String, String>> studentRows = readCsv(dir.resolve("virtual_students.csv"));
             List<Map<String, String>> restaurantRows = readCsv(dir.resolve("restaurants.csv"));
@@ -123,6 +131,76 @@ public class SeedDataService {
                         List.copyOf(item.matchingTags())
                 ))
                 .toList();
+    }
+
+    public DataOverviewResponse dataOverview() {
+        SeedData data = seedData();
+        List<String> userTypes = data.students().stream()
+                .map(StudentSeed::userType)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+        int openWindowCount = (int) data.windows().stream()
+                .filter(window -> "OPEN".equals(window.status()))
+                .count();
+        return new DataOverviewResponse(
+                resolvedSeedDir == null ? configuredSeedDir.toString() : resolvedSeedDir.toString(),
+                data.students().size(),
+                data.restaurants().size(),
+                data.windows().size(),
+                openWindowCount,
+                data.dishes().size(),
+                userTypes,
+                List.of("BREAKFAST", "LUNCH", "DINNER"),
+                List.of(
+                        "virtual_students.csv",
+                        "restaurants.csv",
+                        "windows.csv",
+                        "dishes.csv",
+                        "arrival_rules.csv",
+                        "tag_mappings.csv"
+                )
+        );
+    }
+
+    public FlowCurveResponse flowCurve(String mealPeriod, int bucketMinutes) {
+        String normalizedMealPeriod = mealPeriod == null
+                ? "LUNCH"
+                : mealPeriod.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("BREAKFAST", "LUNCH", "DINNER").contains(normalizedMealPeriod)) {
+            throw new BadRequestException("mealPeriod", "mealPeriod must be BREAKFAST, LUNCH or DINNER");
+        }
+        if (bucketMinutes < 1 || bucketMinutes > 30) {
+            throw new BadRequestException("bucketMinutes", "bucketMinutes must be between 1 and 30");
+        }
+
+        Map<Integer, Integer> arrivalsByBucket = new TreeMap<>();
+        for (StudentSeed student : seedData().students()) {
+            int minute = switch (normalizedMealPeriod) {
+                case "BREAKFAST" -> student.breakfastArrivalMinute();
+                case "DINNER" -> student.dinnerArrivalMinute();
+                default -> student.lunchArrivalMinute();
+            };
+            int bucket = Math.max(0, minute / bucketMinutes * bucketMinutes);
+            arrivalsByBucket.merge(bucket, 1, Integer::sum);
+        }
+
+        int cumulative = 0;
+        List<FlowCurvePoint> points = new ArrayList<>();
+        int maxBucket = arrivalsByBucket.isEmpty() ? 0 : Collections.max(arrivalsByBucket.keySet());
+        for (int minute = 0; minute <= maxBucket; minute += bucketMinutes) {
+            int arrivals = arrivalsByBucket.getOrDefault(minute, 0);
+            cumulative += arrivals;
+            points.add(new FlowCurvePoint(minute, arrivals, cumulative));
+        }
+        return new FlowCurveResponse(
+                normalizedMealPeriod,
+                "virtual_students.csv",
+                seedData().students().size(),
+                bucketMinutes,
+                List.copyOf(points)
+        );
     }
 
     private Path resolveSeedDir() {

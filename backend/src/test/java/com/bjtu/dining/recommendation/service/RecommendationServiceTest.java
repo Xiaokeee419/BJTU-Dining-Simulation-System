@@ -93,7 +93,7 @@ class RecommendationServiceTest {
 
         var result = recommendationService.generate(request);
 
-        assertThat(result.minute()).isEqualTo(60);
+        assertThat(result.minute()).isEqualTo(30);
         assertThat(result.restaurants()).hasSize(3);
         assertThat(result.windows()).hasSize(3);
         assertThat(result.dishes()).hasSize(3);
@@ -176,9 +176,11 @@ class RecommendationServiceTest {
         assertThat(result.maxQueueDelta()).isLessThan(0);
         assertThat(result.busyWindowCountDelta()).isLessThan(0);
         assertThat(result.extremeWindowCountDelta()).isLessThanOrEqualTo(0);
-        assertThat(result.servedUserCountDelta()).isPositive();
+        assertThat(result.servedUserCountDelta()).isGreaterThanOrEqualTo(0);
         assertThat(result.unservedUserCountDelta()).isLessThanOrEqualTo(0);
-        assertThat(result.conclusion()).contains("应用分流策略后").contains("整体策略效果");
+        assertThat(result.conclusion())
+                .contains("\u6267\u884c\u5206\u6d41\u5efa\u8bae\u540e")
+                .contains("\u5206\u6d41\u7b56\u7565");
     }
 
     @Test

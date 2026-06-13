@@ -24,11 +24,12 @@ npm run dev
 http://127.0.0.1:5173
 ```
 
-## Mock 与真实接口
+## 真实接口与 Mock
 
-默认使用前端 Mock 数据，适合独立开发和演示。
+当前默认连接真实后端。综合展示页始终读取 CSV、仿真、分流对比和优化接口，不使用前端
+Mock。旧页面仍可在独立开发时通过环境变量切换 Mock。
 
-切换真实后端时，在 `frontend/.env.local` 中写入：
+在 `frontend/.env.local` 中使用：
 
 ```text
 VITE_USE_MOCK=false
@@ -37,6 +38,20 @@ VITE_DEV_PROXY_TARGET=http://localhost:8080
 ```
 
 此时 Vite 会把 `/api/v1/**` 代理到 `http://localhost:8080`。
+
+综合展示页地址：
+
+```text
+http://127.0.0.1:5173/
+```
+
+该页面覆盖：
+
+- CSV 数据规模与连续入流曲线
+- baseline 仿真及窗口负载
+- 分流建议、compare run 和前后指标
+- 模拟退火温度、loss、当前参数、best 参数与迭代历史
+- API 错误、runId、taskId 和旧数据混用风险调试面板
 
 ## 已覆盖的 C 模块验收项
 

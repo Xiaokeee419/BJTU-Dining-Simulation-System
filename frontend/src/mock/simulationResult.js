@@ -14,7 +14,7 @@ const periodWeights = {
 }
 
 export function buildSimulationResult(profile, scenario, runId) {
-  const duration = Number(scenario.durationMinutes || 60)
+  const duration = Number(scenario.durationMinutes || 90)
   const step = Number(scenario.stepMinutes || 3)
   const countFactor = Number(scenario.virtualUserCount || 300) / 300
   const scenarioFactor =

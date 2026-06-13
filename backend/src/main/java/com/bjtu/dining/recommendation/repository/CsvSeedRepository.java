@@ -80,6 +80,7 @@ public class CsvSeedRepository {
             var restaurant = new RestaurantParameter(
                     parseLong(row[0]),
                     row[2],
+                    row[3],
                     row[4],
                     parseInt(row[6]),
                     parseDouble(row[7]),

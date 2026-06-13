@@ -26,6 +26,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,11 +34,15 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SimulationService {
+    private static final int DEFAULT_DURATION_MINUTES = 90;
+    private static final int MAX_COOLDOWN_EXTENSION_MINUTES = 45;
+    private static final int MAX_STORED_RUNS = 240;
     private static final double WINDOW_SELECTION_TEMPERATURE = 7.8;
     private static final double DISH_SELECTION_TEMPERATURE = 4.2;
     private static final Map<String, Double> CROWD_SPREAD_FACTOR = Map.of(
@@ -68,6 +73,8 @@ public class SimulationService {
     private final AtomicLong runIdGenerator = new AtomicLong(10000);
     private final Map<Long, SimulationRunResult> runStore = new ConcurrentHashMap<>();
     private final Map<Long, List<DinerProfile>> cohortStore = new ConcurrentHashMap<>();
+    private final Deque<Long> storedRunOrder = new ConcurrentLinkedDeque<>();
+    private final Object runStoreLock = new Object();
 
     public SimulationService(SeedDataService seedDataService, ArrivalCurveGenerator arrivalCurveGenerator) {
         this.seedDataService = seedDataService;
@@ -85,9 +92,9 @@ public class SimulationService {
 
     public List<ScenarioPreset> scenarioPresets() {
         return List.of(
-                new ScenarioPreset("weekday-lunch-peak", "工作日午餐高峰", "LUNCH", "WEEKDAY", "BUSY", 1.0, 1.2, List.of(), 800, 60, 3, 20260425),
-                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐常态", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 600, 60, 3, 20260426),
-                new ScenarioPreset("rainy-lunch-extreme", "雨天午餐极端拥挤", "LUNCH", "WEEKDAY", "EXTREME", 1.25, 1.25, List.of(), 1200, 60, 3, 20260427)
+                new ScenarioPreset("weekday-lunch-peak", "工作日午餐高峰", "LUNCH", "WEEKDAY", "BUSY", 1.0, 1.2, List.of(), 3000, DEFAULT_DURATION_MINUTES, 3, 20260425),
+                new ScenarioPreset("weekday-dinner-normal", "工作日晚餐常态", "DINNER", "WEEKDAY", "NORMAL", 1.0, 1.0, List.of(), 1800, DEFAULT_DURATION_MINUTES, 3, 20260426),
+                new ScenarioPreset("rainy-lunch-extreme", "雨天午餐极端拥挤", "LUNCH", "WEEKDAY", "EXTREME", 1.25, 1.25, List.of(), 5000, DEFAULT_DURATION_MINUTES, 3, 20260427)
         );
     }
 
@@ -175,8 +182,17 @@ public class SimulationService {
         int nextDinerIndex = 0;
         int previousMinute = 0;
         boolean diversionApplied = diversionPlan == null || !diversionPlan.hasSuggestions();
+        Map<ResolvedDiversionSuggestion, Integer> remainingDiversionQuota = new LinkedHashMap<>();
+        if (diversionPlan != null) {
+            for (ResolvedDiversionSuggestion suggestion : diversionPlan.suggestions()) {
+                remainingDiversionQuota.put(suggestion, suggestion.estimatedAcceptedCount());
+            }
+        }
 
-        for (int minute = 0; minute <= scenario.durationMinutes(); minute += scenario.stepMinutes()) {
+        int configuredEndMinute = scenario.durationMinutes();
+        int maxEndMinute = Math.min(180, configuredEndMinute + MAX_COOLDOWN_EXTENSION_MINUTES);
+
+        for (int minute = 0; minute <= maxEndMinute; minute += scenario.stepMinutes()) {
             int elapsed = minute > 0 ? minute - previousMinute : 0;
             if (elapsed > 0) {
                 serveQueues(seedData, scenario, closedWindowIds, queueLengths, serviceCarry, elapsed);
@@ -188,7 +204,8 @@ public class SimulationService {
                         scenario,
                         diversionPlan,
                         closedWindowIds,
-                        queueLengths
+                        queueLengths,
+                        remainingDiversionQuota
                 );
                 diversionApplied = true;
             }
@@ -210,7 +227,8 @@ public class SimulationService {
                         seedData,
                         queueLengths,
                         closedWindowIds,
-                        scenario.mealPeriod()
+                        scenario.mealPeriod(),
+                        remainingDiversionQuota
                 );
                 chooseDish(diner, finalChoice.window(), seedData.dishesByWindow());
                 queueLengths.compute(finalChoice.window().windowId(), (ignored, value) -> value == null ? 1 : value + 1);
@@ -225,6 +243,12 @@ public class SimulationService {
             maxExtremeWindowCount = Math.max(maxExtremeWindowCount, crowdCounts[1]);
             timePoints.add(snapshot.timePoint());
             previousMinute = minute;
+
+            if (minute >= configuredEndMinute
+                    && nextDinerIndex >= diners.size()
+                    && queuesEmpty(queueLengths)) {
+                break;
+            }
         }
 
         int unservedUserCount = queueLengths.values().stream().mapToInt(Integer::intValue).sum();
@@ -255,9 +279,26 @@ public class SimulationService {
                 compareSourceRunId,
                 diversionPlan == null ? null : diversionPlan.startMinute()
         );
-        runStore.put(runId, result);
-        cohortStore.put(runId, List.copyOf(dinerCohort));
+        storeRunResult(result, dinerCohort);
         return result;
+    }
+
+    private void storeRunResult(SimulationRunResult result, List<DinerProfile> dinerCohort) {
+        synchronized (runStoreLock) {
+            long runId = result.runId();
+            runStore.put(runId, result);
+            cohortStore.put(runId, List.copyOf(dinerCohort));
+            storedRunOrder.remove(runId);
+            storedRunOrder.addLast(runId);
+            while (storedRunOrder.size() > MAX_STORED_RUNS) {
+                Long expiredRunId = storedRunOrder.pollFirst();
+                if (expiredRunId == null) {
+                    break;
+                }
+                runStore.remove(expiredRunId);
+                cohortStore.remove(expiredRunId);
+            }
+        }
     }
 
     private UserProfile normalizeProfile(UserProfile profile) {
@@ -275,7 +316,7 @@ public class SimulationService {
 
     private SimulationScenario normalizeScenario(SimulationScenario scenario) {
         if (scenario == null) {
-            return new SimulationScenario("LUNCH", "WEEKDAY", "BUSY", 1.0, 1.1, List.of(), 800, 60, 3, 20260427L);
+            return new SimulationScenario("LUNCH", "WEEKDAY", "BUSY", 1.0, 1.1, List.of(), 3000, DEFAULT_DURATION_MINUTES, 3, 20260427L);
         }
         return new SimulationScenario(
                 defaultText(scenario.mealPeriod(), "LUNCH"),
@@ -284,8 +325,8 @@ public class SimulationService {
                 scenario.weatherFactor() == null ? 1.0 : scenario.weatherFactor(),
                 scenario.eventFactor() == null ? 1.1 : scenario.eventFactor(),
                 scenario.closedWindowIds() == null ? List.of() : scenario.closedWindowIds(),
-                scenario.virtualUserCount() == null ? 800 : scenario.virtualUserCount(),
-                scenario.durationMinutes() == null ? 60 : scenario.durationMinutes(),
+                scenario.virtualUserCount() == null ? 3000 : scenario.virtualUserCount(),
+                scenario.durationMinutes() == null ? DEFAULT_DURATION_MINUTES : scenario.durationMinutes(),
                 scenario.stepMinutes() == null ? 3 : scenario.stepMinutes(),
                 scenario.randomSeed() == null ? 20260427L : scenario.randomSeed()
         );
@@ -333,7 +374,8 @@ public class SimulationService {
             Integer requestedMinute
     ) {
         int resolved = requestedMinute == null ? resolvePeakMinute(baseRun) : requestedMinute;
-        if (resolved < 0 || resolved > scenario.durationMinutes()) {
+        int maxAvailableMinute = maxAvailableMinute(baseRun, scenario.durationMinutes());
+        if (resolved < 0 || resolved > maxAvailableMinute) {
             throw new BadRequestException("minute", "minute is out of simulation range");
         }
         if (resolved % scenario.stepMinutes() != 0) {
@@ -492,6 +534,17 @@ public class SimulationService {
         };
     }
 
+    private boolean queuesEmpty(Map<Long, Integer> queueLengths) {
+        return queueLengths.values().stream().allMatch(queueLength -> queueLength == null || queueLength <= 0);
+    }
+
+    private int maxAvailableMinute(SimulationRunResult run, int fallbackMinute) {
+        if (run == null || run.timePoints() == null || run.timePoints().isEmpty()) {
+            return fallbackMinute;
+        }
+        return run.timePoints().get(run.timePoints().size() - 1).minute();
+    }
+
     private void serveQueues(
             SeedData seedData,
             SimulationScenario scenario,
@@ -579,7 +632,8 @@ public class SimulationService {
             SeedData seedData,
             Map<Long, Integer> queueLengths,
             Set<Long> closedWindowIds,
-            String mealPeriod
+            String mealPeriod,
+            Map<ResolvedDiversionSuggestion, Integer> remainingDiversionQuota
     ) {
         if (diversionPlan == null || !diversionPlan.hasSuggestions() || minute < diversionPlan.startMinute()) {
             return originalChoice;
@@ -591,11 +645,15 @@ public class SimulationService {
         }
 
         WindowChoice redirectedChoice = null;
+        ResolvedDiversionSuggestion selectedSuggestion = null;
         double bestOpportunity = -1_000_000_000;
         int sourceQueueLength = queueLengths.getOrDefault(originalChoice.window().windowId(), 0);
         double sourceWait = windowWaitMinutes(originalChoice.window(), sourceQueueLength);
         double sourcePressure = queuePressureScore(originalChoice.window(), sourceQueueLength, sourceWait);
         for (ResolvedDiversionSuggestion candidate : candidates) {
+            if (remainingDiversionQuota.getOrDefault(candidate, 0) <= 0) {
+                continue;
+            }
             WindowSeed targetWindow = seedData.windowsById().get(candidate.toWindowId());
             if (targetWindow == null || !isWindowAvailable(targetWindow, mealPeriod, closedWindowIds)) {
                 continue;
@@ -627,7 +685,11 @@ public class SimulationService {
             if (opportunityScore > bestOpportunity) {
                 bestOpportunity = opportunityScore;
                 redirectedChoice = new WindowChoice(targetWindow, targetWait);
+                selectedSuggestion = candidate;
             }
+        }
+        if (selectedSuggestion != null) {
+            remainingDiversionQuota.computeIfPresent(selectedSuggestion, (ignored, remaining) -> Math.max(0, remaining - 1));
         }
         return redirectedChoice == null ? originalChoice : redirectedChoice;
     }
@@ -682,9 +744,14 @@ public class SimulationService {
             SimulationScenario scenario,
             DiversionPlan diversionPlan,
             Set<Long> closedWindowIds,
-            Map<Long, Integer> queueLengths
+            Map<Long, Integer> queueLengths,
+            Map<ResolvedDiversionSuggestion, Integer> remainingDiversionQuota
     ) {
         for (ResolvedDiversionSuggestion suggestion : diversionPlan.suggestions()) {
+            int remainingQuota = remainingDiversionQuota.getOrDefault(suggestion, 0);
+            if (remainingQuota <= 0) {
+                continue;
+            }
             WindowSeed sourceWindow = seedData.windowsById().get(suggestion.fromWindowId());
             WindowSeed targetWindow = seedData.windowsById().get(suggestion.toWindowId());
             if (sourceWindow == null || targetWindow == null) {
@@ -721,7 +788,7 @@ public class SimulationService {
             );
             int movedCount = Math.min(
                     sourceQueueLength,
-                    Math.min(suggestion.estimatedAcceptedCount(), Math.min(targetCapacity, desiredTransfer))
+                    Math.min(remainingQuota, Math.min(targetCapacity, desiredTransfer))
             );
             if (movedCount <= 0) {
                 continue;
@@ -729,6 +796,7 @@ public class SimulationService {
 
             queueLengths.put(sourceWindow.windowId(), sourceQueueLength - movedCount);
             queueLengths.put(targetWindow.windowId(), targetQueueLength + movedCount);
+            remainingDiversionQuota.put(suggestion, remainingQuota - movedCount);
         }
     }
 
@@ -798,7 +866,11 @@ public class SimulationService {
         if (!"OPEN".equals(window.status())) {
             return false;
         }
-        return mealPeriod.equals(window.recommendedMealPeriod()) || "ALL".equals(window.recommendedMealPeriod());
+        return switch (mealPeriod) {
+            case "BREAKFAST" -> "BREAKFAST".equals(window.recommendedMealPeriod());
+            case "LUNCH", "DINNER" -> !"BREAKFAST".equals(window.recommendedMealPeriod());
+            default -> false;
+        };
     }
 
     private double tagOverlapScore(Set<String> userTags, Set<String> targetTags) {

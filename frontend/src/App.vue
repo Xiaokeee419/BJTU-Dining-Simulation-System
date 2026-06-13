@@ -1,11 +1,10 @@
 <template>
-  <div class="app-shell">
-    <AppNavbar />
+  <AppLayout>
     <RouterView />
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { RouterView } from 'vue-router'
-import AppNavbar from './components/AppNavbar.vue'
+import AppLayout from './components/AppLayout.vue'
 </script>

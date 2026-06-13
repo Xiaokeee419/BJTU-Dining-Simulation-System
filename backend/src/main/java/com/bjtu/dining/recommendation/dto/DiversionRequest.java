@@ -14,6 +14,17 @@ public record DiversionRequest(
         String targetCrowdLevel,
 
         @Valid
-        UserProfileRequest profile
+        UserProfileRequest profile,
+
+        @Valid
+        DiversionStrategyParameters strategyParameters
 ) {
+    public DiversionRequest(
+            Long runId,
+            Integer minute,
+            String targetCrowdLevel,
+            UserProfileRequest profile
+    ) {
+        this(runId, minute, targetCrowdLevel, profile, null);
+    }
 }

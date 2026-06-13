@@ -32,6 +32,44 @@ export function resolveTimePoint(run, minute) {
   return timePoints.find((point) => point.minute === minute) || resolvePeakTimePoint(run)
 }
 
+export function interpolateTimePoint(run, minute) {
+  const timePoints = [...(Array.isArray(run?.timePoints) ? run.timePoints : [])].sort(
+    (left, right) => Number(left.minute || 0) - Number(right.minute || 0),
+  )
+  if (!timePoints.length) {
+    return null
+  }
+
+  const targetMinute = Number(minute || 0)
+  const firstPoint = timePoints[0]
+  const lastPoint = timePoints[timePoints.length - 1]
+  if (targetMinute <= Number(firstPoint.minute || 0)) {
+    return clonePoint(firstPoint, targetMinute)
+  }
+  if (targetMinute >= Number(lastPoint.minute || 0)) {
+    return clonePoint(lastPoint, targetMinute)
+  }
+
+  const upperIndex = timePoints.findIndex((point) => Number(point.minute || 0) >= targetMinute)
+  const lowerPoint = timePoints[Math.max(0, upperIndex - 1)]
+  const upperPoint = timePoints[upperIndex]
+  if (Number(upperPoint.minute) === targetMinute) {
+    return clonePoint(upperPoint, targetMinute)
+  }
+
+  const span = Number(upperPoint.minute) - Number(lowerPoint.minute)
+  const ratio = span > 0 ? (targetMinute - Number(lowerPoint.minute)) / span : 0
+
+  return {
+    minute: targetMinute,
+    restaurants: interpolateRestaurants(
+      lowerPoint.restaurants || [],
+      upperPoint.restaurants || [],
+      ratio,
+    ),
+  }
+}
+
 export function flattenWindows(point) {
   return (point?.restaurants || []).flatMap((restaurant) =>
     (restaurant.windows || []).map((window) => ({
@@ -238,4 +276,108 @@ function pickNumber(...values) {
 function round(value, digits) {
   const factor = 10 ** digits
   return Math.round(Number(value || 0) * factor) / factor
+}
+
+function interpolateRestaurants(lowerRestaurants, upperRestaurants, ratio) {
+  const upperById = new Map(
+    upperRestaurants.map((restaurant) => [String(restaurant.restaurantId), restaurant]),
+  )
+
+  return lowerRestaurants.map((lowerRestaurant) => {
+    const upperRestaurant =
+      upperById.get(String(lowerRestaurant.restaurantId)) || lowerRestaurant
+    const currentCount = interpolateInteger(
+      lowerRestaurant.currentCount,
+      upperRestaurant.currentCount,
+      ratio,
+    )
+    const capacity = Number(upperRestaurant.capacity || lowerRestaurant.capacity || 0)
+
+    return {
+      ...lowerRestaurant,
+      ...upperRestaurant,
+      currentCount,
+      capacity,
+      crowdLevel: restaurantCrowdLevel(currentCount, capacity),
+      windows: interpolateWindows(
+        lowerRestaurant.windows || [],
+        upperRestaurant.windows || [],
+        ratio,
+      ),
+    }
+  })
+}
+
+function interpolateWindows(lowerWindows, upperWindows, ratio) {
+  const upperById = new Map(upperWindows.map((window) => [String(window.windowId), window]))
+
+  return lowerWindows.map((lowerWindow) => {
+    const upperWindow = upperById.get(String(lowerWindow.windowId)) || lowerWindow
+    const queueLength = interpolateInteger(
+      lowerWindow.queueLength,
+      upperWindow.queueLength,
+      ratio,
+    )
+    const servingCount = interpolateInteger(
+      lowerWindow.servingCount,
+      upperWindow.servingCount,
+      ratio,
+    )
+    const waitMinutes = interpolateNumber(
+      lowerWindow.waitMinutes,
+      upperWindow.waitMinutes,
+      ratio,
+      1,
+    )
+    const status =
+      lowerWindow.status === 'CLOSED' && upperWindow.status === 'CLOSED'
+        ? 'CLOSED'
+        : upperWindow.status || lowerWindow.status
+
+    return {
+      ...lowerWindow,
+      ...upperWindow,
+      queueLength,
+      servingCount,
+      waitMinutes,
+      status,
+      crowdLevel: status === 'CLOSED' ? 'IDLE' : windowCrowdLevel(waitMinutes),
+    }
+  })
+}
+
+function interpolateInteger(lowerValue, upperValue, ratio) {
+  return Math.round(interpolateNumber(lowerValue, upperValue, ratio))
+}
+
+function interpolateNumber(lowerValue, upperValue, ratio, digits = 0) {
+  const lower = Number(lowerValue || 0)
+  const upper = Number(upperValue || 0)
+  return round(lower + (upper - lower) * ratio, digits)
+}
+
+function restaurantCrowdLevel(currentCount, capacity) {
+  const ratio = capacity > 0 ? currentCount / capacity : 0
+  if (ratio < 0.4) return 'IDLE'
+  if (ratio < 0.7) return 'NORMAL'
+  if (ratio < 0.9) return 'BUSY'
+  return 'EXTREME'
+}
+
+function windowCrowdLevel(waitMinutes) {
+  if (waitMinutes < 5) return 'IDLE'
+  if (waitMinutes < 10) return 'NORMAL'
+  if (waitMinutes < 20) return 'BUSY'
+  return 'EXTREME'
+}
+
+function clonePoint(point, minute) {
+  return {
+    ...point,
+    minute,
+    restaurants: (point.restaurants || []).map((restaurant) => ({
+      ...restaurant,
+      windows: (restaurant.windows || []).map((window) => ({ ...window })),
+    })),
+  }
 }

@@ -51,8 +51,8 @@
           <el-slider
             :model-value="modelValue.virtualUserCount"
             :min="300"
-            :max="1800"
-            :step="50"
+            :max="5000"
+            :step="100"
             show-input
             @update:model-value="updateField('virtualUserCount', $event)"
           />
@@ -106,6 +106,7 @@
             >
               <el-option v-for="item in durationOptions" :key="item" :label="`${item} 分钟`" :value="item" />
             </el-select>
+            <p class="field-help">建议从 90 分钟起步；系统会在设定时长后继续模拟队列消化阶段，直到明显回落或达到上限。</p>
           </el-form-item>
 
           <el-form-item label="时间粒度">
@@ -164,7 +165,7 @@ const crowdOptions = [
   { label: '极端拥挤', value: 'EXTREME' },
 ]
 
-const durationOptions = [60, 90, 120, 150]
+const durationOptions = [60, 90, 120, 150, 180]
 const stepOptions = [1, 2, 3, 4, 5]
 
 const demandHint = computed(() => {
@@ -192,7 +193,7 @@ function updateField(key, value) {
 }
 
 function updateDurationMinutes(value) {
-  const durationMinutes = normalizeDuration(Number(value || 60), Number(props.modelValue.stepMinutes || 3))
+  const durationMinutes = normalizeDuration(Number(value || 90), Number(props.modelValue.stepMinutes || 3))
   emit('update:modelValue', {
     ...props.modelValue,
     durationMinutes,
@@ -204,7 +205,7 @@ function updateStepMinutes(value) {
   emit('update:modelValue', {
     ...props.modelValue,
     stepMinutes,
-    durationMinutes: normalizeDuration(Number(props.modelValue.durationMinutes || 60), stepMinutes),
+    durationMinutes: normalizeDuration(Number(props.modelValue.durationMinutes || 90), stepMinutes),
   })
 }
 

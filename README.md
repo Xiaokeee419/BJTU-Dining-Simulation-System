@@ -34,6 +34,24 @@ mvn -Dmaven.repo.local=../.m2/repository spring-boot:run
 http://localhost:8080
 ```
 
+## 启动综合展示页
+
+后端启动后，新开一个 PowerShell：
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+访问：
+
+```text
+http://127.0.0.1:5173/
+```
+
+根页面会直接串联真实 CSV、baseline 仿真、分流 compare run 和模拟退火优化任务。
+
 ## 验证成员 A 接口
 
 查询用户画像预设：
