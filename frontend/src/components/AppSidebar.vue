@@ -31,7 +31,7 @@
     <div class="sidebar-lab">
       <span class="sidebar-lab-line"></span>
       <strong>北京交通大学</strong>
-      <small>人流动力学实验室</small>
+      <small>就餐仿真系统</small>
     </div>
   </aside>
 </template>

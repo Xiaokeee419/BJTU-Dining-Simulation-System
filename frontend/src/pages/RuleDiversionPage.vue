@@ -169,11 +169,6 @@
           </article>
         </div>
 
-        <p class="flow-diagnostic">
-          如果“来源窗口总排队人数”在分流后几乎没有变化，说明 compareRun
-          可能没有真正执行分流建议，或者分流强度过低，需要进一步检查后端
-          runSimulationWithDiversion / diversion-comparison 逻辑。
-        </p>
       </section>
     </template>
   </main>

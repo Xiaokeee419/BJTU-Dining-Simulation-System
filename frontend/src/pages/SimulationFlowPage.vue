@@ -98,7 +98,6 @@
         <header class="flow-panel-heading">
           <div>
             <h2>基础数据概览</h2>
-            <p>{{ dataOverview?.sourceDirectory || '正在读取数据目录' }}</p>
           </div>
           <span class="flow-status-chip">REAL CSV</span>
         </header>
@@ -112,10 +111,6 @@
             unit="个"
             :detail="scenarioWindowRuleLabel"
           />
-        </div>
-        <div class="flow-data-note">
-          <span>到达模型</span>
-          <strong>arrival_rules.csv + 当前场景参数</strong>
         </div>
       </section>
     </section>

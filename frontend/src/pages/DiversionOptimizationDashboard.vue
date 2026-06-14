@@ -88,7 +88,6 @@
             <header class="panel-heading">
               <div>
                 <h2>CSV 数据基线</h2>
-                <p>{{ dataOverview?.sourceDirectory || '正在读取数据目录' }}</p>
               </div>
               <span class="source-badge">REAL CSV</span>
             </header>
@@ -99,10 +98,6 @@
               <MetricBlock label="当前时段开放窗口" :value="scenarioOpenWindowCount" unit="个" />
             </div>
             <dl class="source-details">
-              <div>
-                <dt>到达模型</dt>
-                <dd>arrival_rules.csv + 当前场景参数</dd>
-              </div>
               <div>
                 <dt>支持人群</dt>
                 <dd>{{ dataOverview?.userTypes?.join(' / ') || '--' }}</dd>
@@ -218,11 +213,6 @@
             </article>
           </div>
 
-          <p class="bottleneck-diagnostic">
-            如果“来源窗口总排队人数”在分流后几乎没有变化，说明 compareRun
-            可能没有真正执行分流建议，或者分流强度过低，需要进一步检查后端
-            runSimulationWithDiversion / diversion-comparison 逻辑。
-          </p>
         </section>
 
         <section class="dashboard-panel">
