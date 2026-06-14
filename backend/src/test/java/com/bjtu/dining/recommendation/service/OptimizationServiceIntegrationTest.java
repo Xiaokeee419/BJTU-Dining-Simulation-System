@@ -28,7 +28,7 @@ class OptimizationServiceIntegrationTest {
                 baseRun.runId(),
                 30,
                 "NORMAL",
-                12,
+                40,
                 20260620L,
                 DiversionStrategyParameters.defaults()
         ));
@@ -53,10 +53,22 @@ class OptimizationServiceIntegrationTest {
         assertThat(iterations.stream()
                 .map(item -> item.loss())
                 .distinct()
-                .count()).isGreaterThan(1);
+                .count()).isGreaterThan(3);
+        assertThat(hasReheatingStep(iterations)).isTrue();
         assertThat(iterations)
                 .extracting(item -> item.bottleneckMetrics().sourceWindowQueueTotal())
                 .doesNotContainNull();
+    }
+
+    private boolean hasReheatingStep(
+            List<com.bjtu.dining.recommendation.dto.OptimizationIterationItem> iterations
+    ) {
+        for (int index = 12; index < iterations.size(); index++) {
+            if (iterations.get(index).temperature() > iterations.get(index - 1).temperature()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean hasBottleneckImprovement(

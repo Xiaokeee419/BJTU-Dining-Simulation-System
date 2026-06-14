@@ -119,6 +119,7 @@ public class OptimizationService {
             CandidateEvaluation currentEvaluation = null;
             CandidateEvaluation bestEvaluation = null;
             List<Long> referenceSourceWindowIds = List.of();
+            int stagnantIterations = 0;
 
             for (int iteration = 1; iteration <= state.totalIterations(); iteration++) {
                 double temperature = temperature(iteration, state.totalIterations());
@@ -128,6 +129,7 @@ public class OptimizationService {
                         currentParameters,
                         bestEvaluation,
                         temperature,
+                        stagnantIterations,
                         random
                 );
                 CandidateEvaluation candidate = evaluate(
@@ -141,10 +143,15 @@ public class OptimizationService {
                     referenceSourceWindowIds = candidate.sourceWindowIds();
                 }
 
+                double acceptanceScale = acceptanceScale(
+                        iteration,
+                        currentEvaluation,
+                        temperature
+                );
                 boolean accepted = currentEvaluation == null
                         || candidate.loss() <= currentEvaluation.loss()
                         || random.nextDouble() < Math.exp(
-                                (currentEvaluation.loss() - candidate.loss()) / Math.max(0.05, temperature)
+                                (currentEvaluation.loss() - candidate.loss()) / acceptanceScale
                         );
                 boolean acceptedWorse = accepted
                         && currentEvaluation != null
@@ -156,6 +163,9 @@ public class OptimizationService {
                 boolean becameBest = bestEvaluation == null || candidate.loss() < bestEvaluation.loss();
                 if (becameBest) {
                     bestEvaluation = candidate;
+                    stagnantIterations = 0;
+                } else {
+                    stagnantIterations++;
                 }
 
                 state.addIteration(
@@ -370,6 +380,7 @@ public class OptimizationService {
             DiversionStrategyParameters current,
             CandidateEvaluation best,
             double temperature,
+            int stagnantIterations,
             Random random
     ) {
         if (iteration == 1) {
@@ -427,10 +438,32 @@ public class OptimizationService {
                     0.5
             ));
         }
-        DiversionStrategyParameters searchCenter = best != null && random.nextDouble() < 0.72
+        if (iteration > 12 && (stagnantIterations >= 8 || iteration % 15 == 0)) {
+            return globalCandidate(random);
+        }
+        if (iteration > 12 && random.nextDouble() < 0.22) {
+            return globalCandidate(random);
+        }
+        double bestCenterProbability = iteration <= 12 ? 0.72 : 0.48;
+        DiversionStrategyParameters searchCenter = best != null
+                && random.nextDouble() < bestCenterProbability
                 ? best.parameters()
                 : current;
         return perturb(searchCenter, temperature, random);
+    }
+
+    private DiversionStrategyParameters globalCandidate(Random random) {
+        return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
+                uniform(random, 0.35, 1.8),
+                uniform(random, 0.3, 2.5),
+                uniform(random, 0.25, 2.8),
+                3 + random.nextInt(178),
+                uniform(random, -0.3, 0.45),
+                uniform(random, 0.003, 0.12),
+                uniform(random, 0.5, 1.8),
+                uniform(random, 0.5, 2.2),
+                uniform(random, 0.0, 18.0)
+        ));
     }
 
     private DiversionStrategyParameters perturb(
@@ -438,7 +471,7 @@ public class OptimizationService {
             double temperature,
             Random random
     ) {
-        double scale = Math.max(0.08, temperature / 8.0);
+        double scale = Math.max(0.08, Math.min(1.8, temperature / 8.0));
         return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
                 current.sourcePressureScale() + random.nextGaussian() * 0.22 * scale,
                 current.targetPressureBufferScale() + random.nextGaussian() * 0.24 * scale,
@@ -457,7 +490,32 @@ public class OptimizationService {
             return 0.25;
         }
         double progress = (iteration - 1.0) / (totalIterations - 1.0);
-        return 8.0 * Math.pow(0.25 / 8.0, progress);
+        double baseTemperature = 8.0 * Math.pow(0.25 / 8.0, progress);
+        if (iteration <= 12) {
+            return baseTemperature;
+        }
+        int cycleLength = Math.max(12, Math.min(24, totalIterations / 4));
+        int cyclePosition = (iteration - 13) % cycleLength;
+        double reheatingPulse = cyclePosition == 0
+                ? 4.5
+                : 4.5 * Math.pow(Math.max(0.0, 1.0 - cyclePosition / 5.0), 2);
+        return Math.max(baseTemperature, reheatingPulse);
+    }
+
+    private double acceptanceScale(
+            int iteration,
+            CandidateEvaluation current,
+            double temperature
+    ) {
+        if (current == null || iteration <= 12) {
+            return Math.max(0.05, temperature);
+        }
+        double relativeLossScale = Math.max(1.0, current.loss() * 0.035);
+        return Math.max(0.25, relativeLossScale * Math.max(0.15, temperature / 8.0));
+    }
+
+    private double uniform(Random random, double min, double max) {
+        return min + random.nextDouble() * (max - min);
     }
 
     private String normalizeCrowdLevel(String value) {

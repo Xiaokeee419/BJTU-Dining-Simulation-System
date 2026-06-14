@@ -421,7 +421,7 @@
         <div class="chart-grid">
           <DashboardChart
             title="优化过程 Loss 曲线"
-            subtitle="loss 越低越好；绿色点表示成为新的 best。"
+            subtitle="候选 Loss 展示真实搜索波动；历史 Best Loss 展示当前最优值的阶梯式下降。"
             :option="lossCurveOption"
             :loading="loading.optimization && !optimizationIterations.length"
             :empty="!optimizationIterations.length"
@@ -1304,27 +1304,80 @@ const bottleneckComparisonOption = computed(() => ({
   ],
 }))
 
+const lossCurvePoints = computed(() => {
+  let runningBest = null
+  return optimizationIterations.value.map((item) => {
+    const candidateLoss = finiteMetricOrNull(item.loss)
+    if (candidateLoss !== null) {
+      runningBest = runningBest === null
+        ? candidateLoss
+        : Math.min(runningBest, candidateLoss)
+    }
+    return {
+      candidateLoss,
+      bestLoss: runningBest,
+    }
+  })
+})
+
 const lossCurveOption = computed(() => ({
-  color: ['#0160a8'],
-  tooltip: { trigger: 'axis' },
+  color: ['#0160a8', '#16a34a'],
+  tooltip: {
+    trigger: 'axis',
+    formatter: (params) => {
+      const index = Number(params?.[0]?.dataIndex ?? -1)
+      const iteration = optimizationIterations.value[index]
+      if (!iteration) return ''
+      return [
+        `迭代 ${iteration.iteration}`,
+        `候选 Loss：${formatNumber(iteration.loss, 2)}`,
+        `历史 Best：${formatNumber(lossCurvePoints.value[index]?.bestLoss, 2)}`,
+        `温度：${formatNumber(iteration.temperature, 2)}`,
+        `状态：${iteration.best ? '新 Best' : iteration.acceptedWorseSolution ? '接受较差解' : iteration.accepted ? '接受' : '拒绝'}`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 4, data: ['候选 Loss', '历史 Best Loss'] },
   grid: { left: 52, right: 24, top: 28, bottom: 40 },
   xAxis: {
     type: 'category',
     data: optimizationIterations.value.map((item) => item.iteration),
     name: 'Iteration',
   },
-  yAxis: { type: 'value', name: 'Loss' },
+  yAxis: {
+    type: 'value',
+    name: 'Loss',
+    scale: true,
+  },
   series: [
     {
+      name: '候选 Loss',
       type: 'line',
-      smooth: true,
-      data: optimizationIterations.value.map((item) => ({
-        value: item.loss,
+      smooth: false,
+      data: optimizationIterations.value.map((item, index) => ({
+        value: lossCurvePoints.value[index]?.candidateLoss,
         symbolSize: item.best ? 12 : item.accepted ? 8 : 5,
         itemStyle: {
-          color: item.best ? '#16a34a' : item.accepted ? '#0160a8' : '#94a3b8',
+          color: item.best
+            ? '#16a34a'
+            : item.acceptedWorseSolution
+              ? '#f97316'
+              : item.accepted
+                ? '#0160a8'
+                : '#94a3b8',
         },
       })),
+    },
+    {
+      name: '历史 Best Loss',
+      type: 'line',
+      step: 'end',
+      symbol: 'none',
+      lineStyle: {
+        width: 3,
+        color: '#16a34a',
+      },
+      data: lossCurvePoints.value.map((item) => item.bestLoss),
     },
   ],
 }))
