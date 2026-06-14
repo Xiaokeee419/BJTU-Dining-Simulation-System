@@ -1,24 +1,26 @@
 <template>
   <aside class="app-sidebar">
-    <RouterLink to="/" class="sidebar-brand" aria-label="返回仿真驾驶舱">
+    <RouterLink to="/simulation" class="sidebar-brand" aria-label="返回仿真运行">
       <span class="sidebar-brand-mark" aria-hidden="true">
         <i v-for="index in 4" :key="index"></i>
       </span>
       <span class="sidebar-brand-copy">
         <strong>BJTU Simulation</strong>
-        <small>人流动力学决策支持系统</small>
+        <small>食堂排队仿真与分流优化</small>
       </span>
     </RouterLink>
 
+    <div class="sidebar-flow-label">优化流程</div>
     <nav class="sidebar-nav" aria-label="主导航">
       <RouterLink
-        v-for="item in navItems"
+        v-for="(item, index) in navItems"
         :key="item.to"
         :to="item.to"
         class="sidebar-nav-item"
         :class="{ active: route.path === item.to }"
         :aria-current="route.path === item.to ? 'page' : undefined"
       >
+        <span class="sidebar-step">{{ index + 1 }}</span>
         <component :is="item.icon" class="sidebar-nav-icon" />
         <span>{{ item.label }}</span>
       </RouterLink>
@@ -33,18 +35,15 @@
 </template>
 
 <script setup>
-import { Connection, DataAnalysis, Grid, Histogram, Monitor, Setting } from '@element-plus/icons-vue'
+import { DataAnalysis, Histogram, Monitor } from '@element-plus/icons-vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
 
 const navItems = [
-  { to: '/', label: '综合展示', icon: Monitor },
-  { to: '/cockpit', label: '仿真驾驶舱', icon: Grid },
-  { to: '/flow', label: '人流快照', icon: Connection },
-  { to: '/config', label: '场景实验台', icon: Setting },
-  { to: '/statistics', label: '实验结果分析', icon: Histogram },
-  { to: '/recommendation', label: '分流策略验证', icon: DataAnalysis },
+  { to: '/simulation', label: '仿真运行', icon: Monitor },
+  { to: '/rule-diversion', label: '规则分流', icon: DataAnalysis },
+  { to: '/annealing', label: '模拟退火', icon: Histogram },
 ]
 </script>
 
@@ -107,22 +106,30 @@ const navItems = [
   line-height: 1.3;
 }
 
+.sidebar-flow-label {
+  margin: 44px 12px 10px;
+  color: #8490a4;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
 .sidebar-nav {
   display: grid;
-  gap: 6px;
-  margin-top: 48px;
+  gap: 8px;
 }
 
 .sidebar-nav-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 22px 22px 1fr;
   align-items: center;
-  gap: 14px;
-  min-height: 48px;
-  padding: 0 14px;
-  border-radius: 6px;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 13px;
+  border-radius: 7px;
   color: var(--color-on-surface-variant);
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 700;
   transition:
     color 0.18s ease,
     background 0.18s ease,
@@ -144,10 +151,20 @@ const navItems = [
   transform: scale(0.985);
 }
 
+.sidebar-step {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  opacity: 0.76;
+}
+
 .sidebar-nav-icon {
-  width: 21px;
-  height: 21px;
-  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
 }
 
 .sidebar-lab {
@@ -186,14 +203,24 @@ const navItems = [
   }
 
   .sidebar-brand-copy,
-  .sidebar-nav-item span,
+  .sidebar-flow-label,
+  .sidebar-nav-item > span:last-child,
   .sidebar-lab {
     display: none;
   }
 
+  .sidebar-nav {
+    margin-top: 48px;
+  }
+
   .sidebar-nav-item {
+    display: flex;
     justify-content: center;
     padding: 0;
+  }
+
+  .sidebar-step {
+    display: none;
   }
 }
 

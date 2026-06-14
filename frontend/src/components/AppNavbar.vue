@@ -1,11 +1,11 @@
 <template>
   <header class="navbar">
     <div class="navbar-shell">
-      <RouterLink to="/" class="brand">
+      <RouterLink to="/simulation" class="brand">
         <div class="brand-logo">BJ</div>
         <div class="brand-copy">
           <strong>BJTU Dining Simulation System</strong>
-          <span>北京交通大学食堂仿真与分流决策平台</span>
+          <span>食堂仿真、规则分流与模拟退火优化</span>
         </div>
       </RouterLink>
 
@@ -26,17 +26,14 @@
 </template>
 
 <script setup>
-import { DataAnalysis, HomeFilled, Histogram, Setting, UserFilled } from '@element-plus/icons-vue'
+import { DataAnalysis, Histogram, Monitor } from '@element-plus/icons-vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
-
 const navItems = [
-  { to: '/', label: '首页', icon: HomeFilled },
-  { to: '/config', label: '参数配置', icon: Setting },
-  { to: '/flow', label: '人流快照', icon: UserFilled },
-  { to: '/statistics', label: '统计分析', icon: Histogram },
-  { to: '/recommendation', label: '分流对比', icon: DataAnalysis },
+  { to: '/simulation', label: '仿真运行', icon: Monitor },
+  { to: '/rule-diversion', label: '规则分流', icon: DataAnalysis },
+  { to: '/annealing', label: '模拟退火', icon: Histogram },
 ]
 </script>
 
@@ -73,13 +70,12 @@ const navItems = [
   place-items: center;
   width: 44px;
   height: 44px;
+  border: 2px solid #2563eb;
   border-radius: 50%;
   color: #2563eb;
-  border: 2px solid #2563eb;
-  background: linear-gradient(180deg, #ffffff 0%, #edf4ff 100%);
+  background: linear-gradient(180deg, #fff 0%, #edf4ff 100%);
   font-size: 12px;
   font-weight: 900;
-  letter-spacing: 0.08em;
 }
 
 .brand-copy {
@@ -90,84 +86,39 @@ const navItems = [
 .brand-copy strong {
   color: #0f172a;
   font-size: 17px;
-  line-height: 1.2;
 }
 
 .brand-copy span {
   color: #475569;
   font-size: 11px;
-  line-height: 1.2;
 }
 
 .nav-links {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  overflow: auto;
 }
 
 .nav-link {
-  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 72px;
-  padding: 0 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 999px;
   color: #475569;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  transition: color 0.18s ease;
-}
-
-.nav-link::after {
-  position: absolute;
-  right: 8px;
-  bottom: 0;
-  left: 8px;
-  height: 3px;
-  border-radius: 999px 999px 0 0;
-  background: transparent;
-  content: '';
 }
 
 .nav-link:hover,
 .nav-link.active {
   color: #2563eb;
-}
-
-.nav-link.active::after {
-  background: #2563eb;
+  background: #eff6ff;
 }
 
 .nav-icon {
   width: 19px;
   height: 19px;
-}
-
-@media (max-width: 1280px) {
-  .navbar-shell {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    width: min(100%, calc(100% - 36px));
-    padding: 8px 0;
-  }
-
-  .nav-links {
-    justify-content: flex-start;
-  }
-
-  .nav-link {
-    min-height: 44px;
-    padding: 0 14px;
-    border-radius: 999px;
-  }
-
-  .nav-link.active {
-    background: #eff6ff;
-  }
-
-  .nav-link::after {
-    display: none;
-  }
 }
 </style>

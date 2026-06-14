@@ -64,6 +64,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   const lastError = ref(null)
   const rawResponses = ref([])
   const lastChartUpdatedAt = ref(null)
+  const initialized = ref(false)
 
   const controllers = new Map()
   let sessionId = 0
@@ -83,6 +84,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   })
 
   async function initialize() {
+    if (initialized.value) return true
     loading.initialize = true
     requestStatus.value = 'INITIALIZING'
     lastError.value = null
@@ -106,7 +108,9 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
         await restoreLastRun()
       }
 
+      initialized.value = true
       requestStatus.value = 'READY'
+      return true
     } catch (error) {
       handleError(error, '初始化数据读取失败')
       throw error
@@ -555,6 +559,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     lastError,
     rawResponses,
     lastChartUpdatedAt,
+    initialized,
     targetCrowdLevel,
     peakPoint,
     staleDataRisk,
