@@ -1,0 +1,754 @@
+# 分流建议执行前后效果对比功能总结与待办
+
+> 适用分支：`review/diversion-comparison-20260530`  
+> 建议放置路径：`docs/public/分流对比闭环_项目总结与待办.md`  
+> 文档用途：用于向成员 A/B/C 说明当前分流对比闭环的代码实现、前端展示重点、已知问题和后续待办。
+
+---
+
+## 1. 当前分支的功能定位
+
+当前分支的核心目标不是单纯展示推荐结果，而是实现一条完整的分流策略验证链路：
+
+```text
+未分流普通仿真 baseline
+→ 基于高峰 timePoint 生成分流建议
+→ 将分流建议作用到仿真过程，重新运行 compareRun
+→ 对比 baselineRun 与 compareRun 的 metrics
+→ 前端展示分流建议、指标变化、趋势对比和策略结论
+```
+
+这条链路对应 A/B/C 三部分：
+
+```text
+A：负责普通仿真和分流后仿真
+B：负责分流建议生成与策略对比
+C：负责前端状态流、建议列表、指标对比和图表展示
+```
+
+前端后续应围绕这条主线做减法：保留能支撑“分流策略有效性验证”的展示，删除或折叠与主线关系弱、数据口径不清或没有后端支撑的内容。
+
+---
+
+## 2. 后端 A：分流后仿真的实现现状
+
+### 2.1 新增接口
+
+A 模块新增了分流后仿真入口：
+
+```text
+POST /api/v1/simulations/run-with-diversion
+```
+
+相关文件：
+
+```text
+backend/src/main/java/com/bjtu/dining/taska/controller/SimulationController.java
+backend/src/main/java/com/bjtu/dining/taska/service/SimulationService.java
+backend/src/main/java/com/bjtu/dining/taska/model/TaskADtos.java
+```
+
+该接口接收 `SimulationRunWithDiversionRequest`，根据已有 `baseRunId` 和分流建议重新运行一轮仿真，生成新的 `compareRun`。
+
+### 2.2 compareRun 不是 baseline 的复制
+
+`SimulationService.runSimulationWithDiversion()` 当前逻辑为：
+
+```text
+1. 校验 baseRunId；
+2. 校验 diversionSuggestions 非空；
+3. 读取 baseRun；
+4. 要求 baseRun.status = FINISHED；
+5. 复用 baseRun 的 profile 与 scenario；
+6. 解析 diversionStartMinute；
+7. 构建 DiversionPlan；
+8. 调用 simulateRun(profile, scenario, diversionPlan, baseRun.runId()) 重新仿真。
+```
+
+因此 compareRun 的 `runId`、`timePoints`、`metrics`、`createdAt` 都会重新生成，不应只是 baseline 的复制。
+
+### 2.3 分流建议如何影响仿真
+
+当前 A 侧分流作用分两步：
+
+#### 1）对已有队列做一次性迁移
+
+在仿真到达 `diversionStartMinute` 后，执行：
+
+```text
+applyDiversionToExistingQueues(...)
+```
+
+逻辑要点：
+
+```text
+- 找到 sourceWindow 和 targetWindow；
+- 判断源窗口和目标窗口是否可用；
+- 源窗口队列为空则跳过；
+- 只有目标窗口等待时间低于源窗口等待时间时才迁移；
+- movedCount = min(源队列长度, estimatedAcceptedCount, 目标窗口可承接容量)；
+- 源窗口 queueLength 减少 movedCount；
+- 目标窗口 queueLength 增加 movedCount。
+```
+
+#### 2）对后续新到达用户做概率引导
+
+后续用户原本选择源窗口时，执行：
+
+```text
+maybeRedirectWindow(...)
+```
+
+逻辑要点：
+
+```text
+- minute 必须达到 diversionStartMinute；
+- 原选择窗口必须匹配某条分流建议的 fromWindowId；
+- 目标窗口必须存在且可用；
+- 目标窗口不能超过 maxReasonableTargetQueue；
+- 目标窗口等待时间不能比原窗口更差；
+- 按 acceptanceRate 概率决定是否重定向；
+- 重定向成功后，用户进入目标窗口队列。
+```
+
+这说明 compareRun 的快照和指标确实会受到分流建议影响。
+
+### 2.4 A 模块当前数据口径
+
+需要注意，A 的 `currentCount` 并不是真实座位就餐人数，而是：
+
+```text
+currentCount = 所有窗口 queueLength + servingCount 的汇总
+```
+
+因此前端不应将其展示为：
+
+```text
+当前就餐人数
+座位利用率
+```
+
+更合理的命名是：
+
+```text
+高峰负载人数
+排队/服务负载
+负载率
+容量负载率
+```
+
+---
+
+## 3. 后端 B：分流建议与策略对比实现现状
+
+### 3.1 新增聚合接口
+
+B 模块新增了聚合接口：
+
+```text
+POST /api/v1/strategies/diversion-comparison
+```
+
+相关文件：
+
+```text
+backend/src/main/java/com/bjtu/dining/recommendation/controller/StrategyController.java
+backend/src/main/java/com/bjtu/dining/recommendation/service/RecommendationService.java
+backend/src/main/java/com/bjtu/dining/recommendation/dto/DiversionComparisonRequest.java
+backend/src/main/java/com/bjtu/dining/recommendation/dto/DiversionComparisonResult.java
+```
+
+请求结构：
+
+```text
+DiversionComparisonRequest(
+  baseRunId,
+  minute,
+  targetCrowdLevel,
+  autoRunCompare
+)
+```
+
+返回结构：
+
+```text
+DiversionComparisonResult(
+  baseRunId,
+  compareRunId,
+  minute,
+  diversionResult,
+  comparison,
+  baseMetrics,
+  compareMetrics,
+  status
+)
+```
+
+### 3.2 分流对比聚合流程
+
+B 侧聚合流程应为：
+
+```text
+1. 根据 baseRunId 读取 A 生成的真实 baseRun；
+2. 如果 minute 为空，则解析高峰 minute；
+3. 基于该 minute 生成 diversion suggestions；
+4. 调用 A 的 run-with-diversion 生成 compareRun；
+5. 调用策略对比逻辑比较 baseline 与 compare；
+6. 返回 baseRunId、compareRunId、diversionResult、comparison、baseMetrics、compareMetrics。
+```
+
+### 3.3 高峰 minute 口径
+
+分流和推荐不能默认使用仿真最后一分钟，因为最后一分钟常常是队列清空状态，会导致推荐和分流无意义。
+
+当前应使用高峰 minute，建议口径：
+
+```text
+优先选择总排队人数 totalQueueLength 最大的 timePoint；
+如果相同，再比较 totalCurrentCount；
+如果仍相同，再比较 minute。
+```
+
+前端页面中也应明确写成：
+
+```text
+推荐时间点：第 X 分钟（高峰快照）
+```
+
+### 3.4 策略对比指标
+
+当前策略对比主要计算：
+
+```text
+avgWaitDelta = compare.avgWaitMinutes - base.avgWaitMinutes
+maxWaitDelta = compare.maxWaitMinutes - base.maxWaitMinutes
+maxQueueDelta = compare.maxQueueLength - base.maxQueueLength
+busyWindowCountDelta = compare.busyWindowCount - base.busyWindowCount
+extremeWindowCountDelta = compare.extremeWindowCount - base.extremeWindowCount
+servedUserCountDelta = compare.servedUserCount - base.servedUserCount
+unservedUserCountDelta = compare.unservedUserCount - base.unservedUserCount
+```
+
+展示时注意：
+
+```text
+等待时间下降：好
+最大队列下降：好
+忙碌窗口数下降：通常好
+极端拥挤窗口数下降：好
+已服务人数增加：好
+未服务人数下降：好
+```
+
+### 3.5 TaskASimulationProvider 的意义
+
+当前 B 模块新增了：
+
+```text
+backend/src/main/java/com/bjtu/dining/recommendation/service/TaskASimulationProvider.java
+```
+
+该类用于把 A 模块的 `TaskADtos.SimulationRunResult` 映射为 B 模块推荐逻辑使用的 `SimulationRunResult`，从而替代原有 `MockSimulationProvider`。这一步很关键，因为 B 的推荐和对比应该基于 A 的真实仿真结果，而不是额外构造的 mock 仿真。
+
+---
+
+## 4. 前端 C：分流对比展示实现现状
+
+### 4.1 新增和改动的核心文件
+
+```text
+frontend/src/api/simulation.js
+frontend/src/api/recommendation.js
+frontend/src/api/mock.js
+frontend/src/stores/simulationStore.js
+frontend/src/pages/RecommendationPage.vue
+frontend/src/components/DiversionSuggestionList.vue
+frontend/src/components/DiversionComparisonPanel.vue
+frontend/src/pages/HomePage.vue
+frontend/src/pages/RealTimeFlowPage.vue
+frontend/src/pages/StatisticsPage.vue
+frontend/src/utils/simulationStats.js
+```
+
+### 4.2 API 层
+
+`frontend/src/api/simulation.js` 当前封装了：
+
+```text
+runSimulation(payload)
+getSimulation(runId)
+runSimulationWithDiversion(payload)
+compareStrategies(payload)
+runDiversionComparison({ baseRunId, minute, targetCrowdLevel, autoRunCompare })
+```
+
+其中 `runDiversionComparison` 调用：
+
+```text
+POST /api/v1/strategies/diversion-comparison
+```
+
+### 4.3 Store 状态流
+
+`frontend/src/stores/simulationStore.js` 中维护了：
+
+```text
+currentRun
+baselineRun
+compareRun
+diversionResult
+strategyComparison
+baseMetrics
+compareMetrics
+diversionComparisonStatus
+selectedCompareMinute
+comparisonError
+```
+
+分流对比运行流程：
+
+```text
+1. 如果没有 baselineRun，则使用 currentRun 作为 baseline；
+2. 选择 selectedCompareMinute 或高峰 minute；
+3. 调用 runDiversionComparison；
+4. 保存 diversionResult、strategyComparison、baseMetrics、compareMetrics；
+5. 如果返回 compareRunId，则继续 getSimulation(compareRunId) 获取 compareRun；
+6. 只有同时满足 compareRunId、comparison、compareRun.runId === compareRunId 时，才置为 COMPLETED；
+7. 否则保持 IDLE 或 ERROR，不显示假完成。
+```
+
+### 4.4 推荐页主线
+
+`RecommendationPage.vue` 已经从普通推荐页转向：
+
+```text
+分流建议列表
+→ 分流前后效果对比
+→ 辅助推荐详情
+```
+
+其中：
+
+```text
+DiversionSuggestionList.vue
+```
+
+用于展示：
+
+```text
+源窗口 → 目标窗口
+建议分流人数
+接受率
+预计接受人数
+预计等待下降
+标签相似度
+分流原因
+```
+
+```text
+DiversionComparisonPanel.vue
+```
+
+用于展示：
+
+```text
+baseline vs compare 指标卡
+核心指标柱状图
+改善幅度图
+若有 timePoints，则展示趋势对比图
+comparison.conclusion
+```
+
+---
+
+## 5. 当前主要问题与风险
+
+### P0-1：mock 模式存在假对比风险
+
+当前 `frontend/src/api/mock.js` 仍存在以下风险：
+
+```text
+mockGetDiversionComparison()
+- suggestions 为空；
+- compareRun 通过 buildSimulationResult 随机生成；
+- comparison 由 baseRun 和 compareRun 直接比较；
+- status 返回 COMPLETED。
+```
+
+这会导致：
+
+```text
+没有真实分流建议
+却显示分流对比已完成
+```
+
+建议修复：
+
+```text
+mock 模式不支持真实分流对比；
+mockGetDiversionComparison 返回：
+  compareRunId: null
+  comparison: null
+  status: 'MOCK_UNSUPPORTED'
+  diversionResult.reason: 'Mock 模式暂不支持真实分流对比，请连接后端接口后运行。'
+```
+
+前端收到后：
+
+```text
+不显示已完成；
+不显示分流后指标对比；
+显示明确提示。
+```
+
+### P0-2：推荐页不应自动运行仿真
+
+当前 `RecommendationPage.vue` 中仍可见进入页面自动运行仿真的逻辑：
+
+```text
+if (!currentRun.value && profiles.value.length && scenarios.value.length) {
+  await store.runCurrentSimulation()
+}
+```
+
+这会导致：
+
+```text
+用户一进入推荐页，就自动生成一个 currentRun；
+baseline 可能不是用户主动配置后运行的方案；
+分流对比语义变得不清楚。
+```
+
+建议修复：
+
+```text
+推荐页只初始化基础数据；
+没有 currentRun 时显示 EmptyState；
+引导用户到参数配置页运行未分流仿真；
+不要在 onMounted 中自动 runCurrentSimulation。
+```
+
+### P1-1：等待时间指标口径需要更清楚
+
+A 侧 `avgWait/maxWait` 来自 `selectedWaits`，也就是用户选择窗口时的预计等待值。对已有队列的迁移会直接影响快照队列压力，但不一定完整反映到存量用户的真实等待改善上。
+
+前端建议：
+
+```text
+分流对比面板中，将更可靠的队列压力指标放前面：
+1. 最大排队长度
+2. 忙碌窗口数
+3. 极端拥挤窗口数
+4. 未服务人数
+5. 平均预计等待
+6. 已服务人数
+```
+
+并在平均等待附近加说明：
+
+```text
+等待时长为用户选择窗口时的预计等待值；分流后队列压力变化请同时参考最大队列长度、忙碌窗口数和未服务人数。
+```
+
+### P1-2：辅助推荐详情仍偏重
+
+餐厅、窗口、菜品推荐应该保留为辅助信息，但不要成为页面主角。
+
+建议：
+
+```text
+辅助推荐详情默认折叠；
+或只展示 Top 3；
+主屏优先展示分流建议和分流前后对比。
+```
+
+### P1-3：参数配置页仍需去空壳
+
+应删除或隐藏：
+
+```text
+热门菜补货策略
+分时开放窗口
+参数页里的高峰分流策略
+```
+
+原因：
+
+```text
+这些不是当前 A 普通仿真的稳定输入；
+如果不进入后端仿真逻辑，容易形成空壳。
+```
+
+### P1-4：全局文案需要统一
+
+统一替换：
+
+```text
+实时人流 → 仿真人流快照 / 人流快照
+当前就餐人数 → 高峰负载人数 / 排队服务负载
+峰值就餐人数 → 高峰负载人数
+座位利用率 → 删除或改为负载率
+容量占用率 → 负载率
+推荐结果 → 分流对比 / 分流决策与效果对比
+用户画像 → 主导人群画像
+```
+
+---
+
+## 6. 前端展示建议：最终保留范围
+
+### 6.1 首页
+
+只保留：
+
+```text
+平台入口
+最近一次仿真
+高峰负载人数
+平均排队时长
+最大排队人数
+开放窗口数
+四个入口卡片
+```
+
+删除或弱化：
+
+```text
+容量占用率
+座位利用率
+复杂同比变化
+大段说明
+```
+
+### 6.2 参数配置页
+
+只保留：
+
+```text
+主导人群画像
+场景参数
+虚拟就餐人数
+天气因子
+活动因子
+关闭窗口
+仿真时长
+时间粒度
+运行未分流仿真
+```
+
+删除：
+
+```text
+热门菜补货策略
+分时开放窗口
+高峰分流策略
+```
+
+### 6.3 人流快照页
+
+保留：
+
+```text
+高峰快照摘要
+Top 5 排队压力餐厅
+Top 5 等待最高窗口
+窗口拥挤等级分布
+时间点选择
+```
+
+折叠：
+
+```text
+全部餐厅详情
+```
+
+删除：
+
+```text
+真实平面热力图
+当前人群画像
+标签人数大盘
+座位/就餐相关表述
+```
+
+### 6.4 统计分析页
+
+保留：
+
+```text
+平均排队时长
+最大排队人数
+仿真样本人数
+未服务人数
+排队人数趋势
+窗口排队/负载对比
+负载率趋势
+```
+
+弱化或删除：
+
+```text
+拥堵指数
+窗口服务负载比
+过多分时对比图
+```
+
+### 6.5 分流对比页
+
+作为核心页面，保留：
+
+```text
+基准方案状态
+推荐时间点
+分流建议列表
+未分流 vs 分流后指标卡
+核心指标柱状图
+改善幅度图
+总排队人数趋势对比
+总负载人数趋势对比
+策略结论
+```
+
+辅助推荐详情放底部并默认折叠。
+
+---
+
+## 7. A/B/C 后续待办
+
+### A 待办
+
+```text
+1. 继续确认 run-with-diversion 生成的 compareRun 与 baseline 的 timePoints/metrics 确实不同；
+2. 明确 currentCount、capacity、queueLength、waitMinutes 的数据口径；
+3. 如果后续要做人群画像/标签分布，需要新增人员级快照接口；
+4. 若要让平均等待更真实，需要维护实际队列用户和真实等待时间，而不只是 selectedWaits。
+```
+
+### B 待办
+
+```text
+1. 确认 diversion-comparison 聚合接口在真实后端环境下可联调；
+2. 确认 minute 为空时使用高峰 minute；
+3. 修正异常捕获，避免内部错误被伪装成 runId 不存在；
+4. conclusion 不应只依赖 avgWaitDelta，应综合 maxQueueDelta、busyWindowCountDelta、extremeWindowCountDelta、unservedUserCountDelta；
+5. 分流建议中的 from/to 窗口名称、建议分流人数、预计接受人数、等待下降、标签相似度需要保持稳定返回。
+```
+
+### C 待办
+
+```text
+1. 修复 mock 假完成风险；
+2. 移除推荐页自动运行仿真逻辑；
+3. 精简首页、参数配置页、人流快照页、统计分析页；
+4. 分流对比页突出 baseline vs compare，不让辅助推荐抢主线；
+5. 统一 currentCount、负载率、预计等待等指标文案；
+6. 没有 compareRunId 和 comparison 时绝不显示“已完成”；
+7. 完成 frontend npm run build；
+8. 完成真实后端联调截图。
+```
+
+---
+
+## 8. 建议验收流程
+
+### 8.1 后端接口验收
+
+```text
+1. POST /api/v1/simulations/run
+   获取 baseRunId。
+
+2. POST /api/v1/strategies/diversion-comparison
+   body:
+   {
+     "baseRunId": baseRunId,
+     "minute": null,
+     "targetCrowdLevel": "NORMAL",
+     "autoRunCompare": true
+   }
+
+3. 检查返回：
+   baseRunId
+   compareRunId
+   minute
+   diversionResult.suggestions
+   comparison
+   baseMetrics
+   compareMetrics
+   status
+
+4. GET /api/v1/simulations/{compareRunId}
+   检查：
+   appliedDiversion = true
+   compareSourceRunId = baseRunId
+   diversionStartMinute = minute
+   timePoints 存在
+   metrics 存在
+```
+
+### 8.2 前端页面验收
+
+```text
+1. 进入参数配置页；
+2. 设置主导人群画像与场景参数；
+3. 运行未分流仿真；
+4. 进入分流对比页；
+5. 保存当前仿真为 baseline；
+6. 运行分流对比；
+7. 页面展示具体分流建议；
+8. 页面展示 baseline vs compare 指标对比；
+9. 若 compareRun.timePoints 存在，展示趋势对比；
+10. 页面结论显示策略改善情况。
+```
+
+### 8.3 状态验收
+
+```text
+未运行对比：
+- 不显示“已完成”；
+- 不显示分流后指标对比；
+- 提示用户先运行分流对比。
+
+运行失败：
+- 显示错误信息；
+- 不保留旧 compareRun 造成误导。
+
+运行成功：
+- compareRunId 存在；
+- strategyComparison 存在；
+- compareRun.runId === compareRunId；
+- 才显示“已完成”。
+```
+
+---
+
+## 9. 对外汇报建议说法
+
+可以这样描述当前分支：
+
+```text
+当前分支已经实现“未分流基准仿真—分流建议生成—分流后对比仿真—策略效果可视化”的核心闭环。A 模块负责生成 baseline 与 compareRun，B 模块负责根据高峰 timePoint 生成分流建议并计算指标差异，C 模块负责在前端展示分流建议、分流前后指标对比、趋势变化和策略结论。后续重点是修复 mock 模式假对比风险、去除推荐页自动运行仿真逻辑，并继续精简前端展示，使系统主线更集中在分流策略效果验证上。
+```
+
+---
+
+## 10. 当前优先级排序
+
+```text
+P0：
+1. mock 模式不允许显示假完成；
+2. 推荐页不自动运行仿真；
+3. 分流对比状态严格依赖 compareRunId + comparison + compareRun；
+4. 真实接口联调 run → diversion-comparison → compareRun lookup。
+
+P1：
+1. 精简前端冗余展示；
+2. 统一负载/就餐/座位相关文案；
+3. 调整等待指标说明；
+4. 辅助推荐详情折叠。
+
+P2：
+1. 人员级标签快照；
+2. 更真实的实际等待时间；
+3. 更精细的分流策略参数；
+4. 更完整的测试用例。
+```

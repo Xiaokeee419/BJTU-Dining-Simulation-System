@@ -1,0 +1,30 @@
+package com.bjtu.dining.recommendation.dto;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+public record DiversionRequest(
+        @NotNull(message = "runId 不能为空")
+        Long runId,
+
+        Integer minute,
+
+        @NotBlank(message = "targetCrowdLevel 不能为空")
+        String targetCrowdLevel,
+
+        @Valid
+        UserProfileRequest profile,
+
+        @Valid
+        DiversionStrategyParameters strategyParameters
+) {
+    public DiversionRequest(
+            Long runId,
+            Integer minute,
+            String targetCrowdLevel,
+            UserProfileRequest profile
+    ) {
+        this(runId, minute, targetCrowdLevel, profile, null);
+    }
+}
