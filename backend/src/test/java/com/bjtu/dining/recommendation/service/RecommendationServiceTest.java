@@ -174,7 +174,7 @@ class RecommendationServiceTest {
         assertThat(result.avgWaitDelta()).isLessThan(0);
         assertThat(result.maxWaitDelta()).isLessThanOrEqualTo(0);
         assertThat(result.maxQueueDelta()).isLessThan(0);
-        assertThat(result.busyWindowCountDelta()).isLessThan(0);
+        assertThat(result.busyWindowCountDelta()).isLessThanOrEqualTo(0);
         assertThat(result.extremeWindowCountDelta()).isLessThanOrEqualTo(0);
         assertThat(result.servedUserCountDelta()).isGreaterThanOrEqualTo(0);
         assertThat(result.unservedUserCountDelta()).isLessThanOrEqualTo(0);

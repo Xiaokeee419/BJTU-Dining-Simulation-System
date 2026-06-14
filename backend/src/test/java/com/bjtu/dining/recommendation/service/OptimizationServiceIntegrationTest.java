@@ -30,7 +30,7 @@ class OptimizationServiceIntegrationTest {
                 "NORMAL",
                 12,
                 20260620L,
-                new DiversionStrategyParameters(1.0, 1.0, 1.0, 60, 0.0, 0.032)
+                DiversionStrategyParameters.defaults()
         ));
 
         var completed = waitForCompletion(job.taskId());
@@ -42,8 +42,32 @@ class OptimizationServiceIntegrationTest {
         assertThat(iterations.get(0).bottleneckMetrics()).isNotNull();
         assertThat(iterations.get(0).bottleneckMetrics().maxSingleWindowQueue()).isGreaterThanOrEqualTo(0);
         assertThat(iterations.get(0).bottleneckMetrics().totalOverload()).isGreaterThanOrEqualTo(0);
-        assertThat(best.loss()).isLessThanOrEqualTo(iterations.get(0).loss());
+        assertThat(best.loss()).isLessThan(iterations.get(0).loss());
         assertThat(best.bottleneckMetrics()).isNotNull();
+        assertThat(best.bottleneckMetrics().sourceWindowQueueTotal())
+                .isLessThan(iterations.get(0).bottleneckMetrics().sourceWindowQueueTotal());
+        assertThat(hasBottleneckImprovement(
+                iterations.get(0).bottleneckMetrics(),
+                best.bottleneckMetrics()
+        )).isTrue();
+        assertThat(iterations.stream()
+                .map(item -> item.loss())
+                .distinct()
+                .count()).isGreaterThan(1);
+        assertThat(iterations)
+                .extracting(item -> item.bottleneckMetrics().sourceWindowQueueTotal())
+                .doesNotContainNull();
+    }
+
+    private boolean hasBottleneckImprovement(
+            com.bjtu.dining.recommendation.dto.OptimizationBottleneckMetrics initial,
+            com.bjtu.dining.recommendation.dto.OptimizationBottleneckMetrics best
+    ) {
+        return best.sourceWindowQueueTotal() < initial.sourceWindowQueueTotal()
+                || best.sourceWindowAverageWait() < initial.sourceWindowAverageWait()
+                || best.maxSingleWindowQueue() < initial.maxSingleWindowQueue()
+                || best.peakTotalQueue() < initial.peakTotalQueue()
+                || best.totalOverload() < initial.totalOverload();
     }
 
     private TaskADtos.SimulationRunResult runSimulation(int users, String crowdLevel, long seed) {

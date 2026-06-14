@@ -6,6 +6,9 @@ public record OptimizationBottleneckMetrics(
         int maxSingleWindowQueue,
         int peakTotalQueue,
         int totalOverload,
+        int extremeOverloadSeverity,
+        int targetWindowOverload,
+        double loadImbalancePenalty,
         int unservedUserCount
 ) {
 }

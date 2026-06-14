@@ -384,6 +384,26 @@
               :tone="card.tone"
             />
           </div>
+          <section class="annealing-further-panel">
+            <div class="annealing-further-heading">
+              <h3>退火相对规则分流的进一步优化</h3>
+              <p>基于真实规则分流 Run 与退火 Best Run，展示退火搜索带来的增量改善。</p>
+            </div>
+            <div class="annealing-further-grid">
+              <article
+                v-for="card in annealingFurtherImprovementCards"
+                :key="card.label"
+                :class="['annealing-further-card', card.tone ? `tone-${card.tone}` : '']"
+              >
+                <span>{{ card.label }}</span>
+                <strong>{{ card.transition }}</strong>
+                <small>{{ card.detail }}</small>
+              </article>
+            </div>
+          </section>
+          <p class="stage-comparison-note">
+            规则分流主要用于快速缓解来源高压窗口；模拟退火在规则分流基础上进一步搜索参数，使瓶颈缓解、过载程度和综合 Loss 继续下降。
+          </p>
           <el-table
             :data="optimizationMetricRows"
             stripe
@@ -408,7 +428,7 @@
           />
           <DashboardChart
             title="迭代中的关键拥挤指标"
-            subtitle="同步观察最大单窗口排队、总过载程度和来源窗口总排队是否回落。"
+            subtitle="与规则分流采用同一组五项瓶颈指标；峰值总排队使用右侧坐标轴。"
             :option="optimizationMetricOption"
             :loading="loading.optimization && !optimizationIterations.length"
             :empty="!optimizationBottleneckSeriesReady"
@@ -568,6 +588,9 @@ const parameterFields = [
   { key: 'maxTransferCount', label: '单条最大转移人数', digits: 0 },
   { key: 'acceptanceBias', label: '接受率偏置', digits: 3 },
   { key: 'waitReductionWeight', label: '等待改善权重', digits: 3 },
+  { key: 'pressureWaitWeight', label: '压力等待权重', digits: 3 },
+  { key: 'pressureQueueWeight', label: '压力队列权重', digits: 3 },
+  { key: 'crossRestaurantPenalty', label: '跨餐厅惩罚', digits: 2 },
 ]
 
 const overviewMinute = ref(null)
@@ -700,11 +723,20 @@ const optimizedComparisonPoint = computed(() =>
 
 const optimizedBottleneckMetrics = computed(() => {
   if (optimizationBestRun.value) {
-    return buildBottleneckMetrics(
+    const runMetrics = buildBottleneckMetrics(
       optimizationBestRun.value,
       optimizedComparisonPoint.value,
       sourceWindowIds.value,
     )
+    const backendMetrics = normalizeOptimizationBottleneckMetrics(
+      optimizationBest.value?.bottleneckMetrics,
+      optimizationBest.value?.metrics,
+    )
+    return {
+      ...runMetrics,
+      targetOverload: backendMetrics.targetOverload,
+      loadImbalance: backendMetrics.loadImbalance ?? runMetrics.loadImbalance,
+    }
   }
   return normalizeOptimizationBottleneckMetrics(
     optimizationBest.value?.bottleneckMetrics,
@@ -870,14 +902,16 @@ const initialOptimizationLoss = computed(() => {
 })
 
 const optimizationBottleneckSeriesReady = computed(() =>
-  optimizationIterations.value.some((item) => {
-    const metrics = item?.bottleneckMetrics
-    return (
-      isFiniteMetric(metrics?.maxSingleWindowQueue)
-      || isFiniteMetric(metrics?.totalOverload)
-      || isFiniteMetric(metrics?.sourceWindowQueueTotal)
-    )
-  }),
+  optimizationIterations.value.some((item) =>
+    [
+      item?.bottleneckMetrics?.sourceWindowQueueTotal,
+      item?.bottleneckMetrics?.sourceWindowAverageWait,
+      item?.bottleneckMetrics?.maxSingleWindowQueue,
+      item?.bottleneckMetrics?.peakTotalQueue,
+      item?.bottleneckMetrics?.totalOverload,
+      item?.bottleneckMetrics?.extremeOverloadSeverity,
+    ].some(isFiniteMetric),
+  ),
 )
 
 const optimizationOutcomeCards = computed(() => {
@@ -937,6 +971,45 @@ const optimizationOutcomeCards = computed(() => {
   ]
 })
 
+const annealingFurtherImprovementCards = computed(() => {
+  const strategy = strategyBottleneckMetrics.value
+  const optimized = optimizedBottleneckMetrics.value
+  const strategyLoss = initialOptimizationLoss.value
+  const optimizedLoss = optimizationBest.value?.loss ?? optimizationJob.value?.bestLoss
+
+  return [
+    furtherImprovementCard(
+      '来源窗口总排队',
+      strategy.sourceQueue,
+      optimized.sourceQueue,
+      0,
+      '人',
+    ),
+    furtherImprovementCard(
+      '来源窗口平均等待',
+      strategy.sourceWait,
+      optimized.sourceWait,
+      1,
+      '分钟',
+    ),
+    furtherImprovementCard(
+      '总过载程度',
+      strategy.totalOverload,
+      optimized.totalOverload,
+      0,
+      '',
+    ),
+    furtherImprovementCard('Loss', strategyLoss, optimizedLoss, 2, ''),
+    furtherImprovementCard(
+      '极端过载程度',
+      strategy.extremeOverload,
+      optimized.extremeOverload,
+      0,
+      '',
+    ),
+  ]
+})
+
 const optimizationMetricRows = computed(() => {
   const baseline = baselineBottleneckMetrics.value
   const strategy = strategyBottleneckMetrics.value
@@ -984,6 +1057,14 @@ const optimizationMetricRows = computed(() => {
       '',
     ),
     metricRow(
+      '极端过载程度',
+      baseline.extremeOverload,
+      strategy.extremeOverload,
+      optimized.extremeOverload,
+      0,
+      '',
+    ),
+    metricRow(
       '未服务人数（人）',
       baseline.unservedUsers,
       strategy.unservedUsers,
@@ -993,7 +1074,7 @@ const optimizationMetricRows = computed(() => {
     ),
     metricRow(
       'Loss',
-      0,
+      null,
       initialOptimizationLoss.value,
       optimizationBest.value?.loss ?? optimizationJob.value?.bestLoss,
       2,
@@ -1249,16 +1330,53 @@ const lossCurveOption = computed(() => ({
 }))
 
 const optimizationMetricOption = computed(() => ({
-  color: ['#0160a8', '#f97316', '#16a34a'],
-  tooltip: { trigger: 'axis' },
+  color: ['#0160a8', '#7c3aed', '#f97316', '#64748b', '#16a34a'],
+  tooltip: {
+    trigger: 'axis',
+    formatter: (params) => {
+      const iteration = params?.[0]?.axisValue ?? '--'
+      return [
+        `迭代 ${iteration}`,
+        ...(params || []).map((item) => `${item.marker}${item.seriesName}：${item.value ?? '--'}`),
+      ].join('<br/>')
+    },
+  },
   legend: { top: 4 },
-  grid: { left: 52, right: 24, top: 48, bottom: 40 },
+  grid: { left: 58, right: 62, top: 58, bottom: 40 },
   xAxis: {
     type: 'category',
     data: optimizationIterations.value.map((item) => item.iteration),
   },
-  yAxis: { type: 'value' },
+  yAxis: [
+    {
+      type: 'value',
+      name: '排队 / 等待 / 过载',
+      min: 0,
+    },
+    {
+      type: 'value',
+      name: '峰值总排队',
+      min: 0,
+      splitLine: { show: false },
+    },
+  ],
   series: [
+    {
+      name: '来源窗口总排队',
+      type: 'line',
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowQueueTotal),
+      ),
+    },
+    {
+      name: '来源窗口平均等待',
+      type: 'line',
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowAverageWait),
+      ),
+    },
     {
       name: '最大单窗口排队',
       type: 'line',
@@ -1268,19 +1386,20 @@ const optimizationMetricOption = computed(() => ({
       ),
     },
     {
+      name: '峰值总排队人数',
+      type: 'line',
+      yAxisIndex: 1,
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.peakTotalQueue),
+      ),
+    },
+    {
       name: '总过载程度',
       type: 'line',
       connectNulls: false,
       data: optimizationIterations.value.map(
         (item) => finiteMetricOrNull(item.bottleneckMetrics?.totalOverload),
-      ),
-    },
-    {
-      name: '来源窗口总排队',
-      type: 'line',
-      connectNulls: false,
-      data: optimizationIterations.value.map(
-        (item) => finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowQueueTotal),
       ),
     },
   ],
@@ -1411,11 +1530,15 @@ function buildBottleneckMetrics(run, comparisonPoint, windowIds) {
   let maxWindowQueue = null
   let peakTotalQueue = null
   let totalOverload = null
+  let extremeOverload = null
+  let loadImbalance = null
 
   if (timePoints.length) {
     maxWindowQueue = 0
     peakTotalQueue = 0
     totalOverload = 0
+    extremeOverload = 0
+    loadImbalance = 0
     timePoints.forEach((point) => {
       const windows = flattenWindows(point).map((entry) => entry.window)
       const totalQueue = windows.reduce((sum, window) => sum + windowQueueLength(window), 0)
@@ -1424,6 +1547,16 @@ function buildBottleneckMetrics(run, comparisonPoint, windowIds) {
         const queueLength = windowQueueLength(window)
         maxWindowQueue = Math.max(maxWindowQueue, queueLength)
         totalOverload += Math.max(queueLength - overloadThreshold, 0)
+        extremeOverload += Math.max(queueLength - 15, 0) ** 2
+      })
+      ;(point.restaurants || []).forEach((restaurant) => {
+        const restaurantQueues = (restaurant.windows || []).map(windowQueueLength)
+        if (!restaurantQueues.length) return
+        const averageQueue =
+          restaurantQueues.reduce((sum, queue) => sum + queue, 0) / restaurantQueues.length
+        restaurantQueues.forEach((queue) => {
+          loadImbalance += (queue - averageQueue) ** 2
+        })
       })
     })
   }
@@ -1439,6 +1572,9 @@ function buildBottleneckMetrics(run, comparisonPoint, windowIds) {
     maxWindowQueue,
     peakTotalQueue,
     totalOverload,
+    extremeOverload,
+    targetOverload: null,
+    loadImbalance,
     unservedUsers: isFiniteMetric(run?.metrics?.unservedUserCount)
       ? Number(run.metrics.unservedUserCount)
       : null,
@@ -1455,6 +1591,9 @@ function normalizeOptimizationBottleneckMetrics(metrics, fallbackMetrics) {
         : null,
       peakTotalQueue: null,
       totalOverload: null,
+      extremeOverload: null,
+      targetOverload: null,
+      loadImbalance: null,
       unservedUsers: isFiniteMetric(fallbackMetrics?.unservedUserCount)
         ? Number(fallbackMetrics.unservedUserCount)
         : null,
@@ -1466,6 +1605,9 @@ function normalizeOptimizationBottleneckMetrics(metrics, fallbackMetrics) {
     maxWindowQueue: finiteMetricOrNull(metrics.maxSingleWindowQueue),
     peakTotalQueue: finiteMetricOrNull(metrics.peakTotalQueue),
     totalOverload: finiteMetricOrNull(metrics.totalOverload),
+    extremeOverload: finiteMetricOrNull(metrics.extremeOverloadSeverity),
+    targetOverload: finiteMetricOrNull(metrics.targetWindowOverload),
+    loadImbalance: finiteMetricOrNull(metrics.loadImbalancePenalty),
     unservedUsers: finiteMetricOrNull(
       metrics.unservedUserCount ?? fallbackMetrics?.unservedUserCount,
     ),
@@ -1546,6 +1688,35 @@ function metricRow(label, baseline, strategy, optimized, digits, unit) {
     optimized: formatNumber(optimized, digits),
     vsBaseline: formatImprovementText(baseline, optimized, digits, unit),
     vsStrategy: formatImprovementText(strategy, optimized, digits, unit),
+  }
+}
+
+function furtherImprovementCard(label, before, after, digits, unit) {
+  const delta = metricDelta(before, after)
+  const percent = improvementPercent(before, after)
+  const transition =
+    isFiniteMetric(before) && isFiniteMetric(after)
+      ? `${formatMetricValue(before, digits, unit)} → ${formatMetricValue(after, digits, unit)}`
+      : '--'
+  let detail = '--'
+  if (isFiniteMetric(delta)) {
+    if (Number(delta) === 0) {
+      detail = '持平'
+    } else {
+      const amount = formatMetricValue(Math.abs(delta), digits, unit)
+      const percentText = isFiniteMetric(percent)
+        ? `（${formatNumber(Math.abs(percent), 1)}%）`
+        : ''
+      detail = Number(delta) < 0
+        ? `再降 ${amount}${percentText}`
+        : `增加 ${amount}${percentText}`
+    }
+  }
+  return {
+    label,
+    transition,
+    detail,
+    tone: lowerBetterTone(delta),
   }
 }
 
@@ -1893,6 +2064,85 @@ function round(value, digits = 0) {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   padding: 18px;
   border-bottom: 1px solid var(--color-outline);
+}
+
+.annealing-further-panel {
+  margin: 18px;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 65%);
+}
+
+.annealing-further-heading {
+  padding: 15px 16px 10px;
+}
+
+.annealing-further-heading h3 {
+  margin: 0;
+  color: var(--color-primary);
+  font-size: 16px;
+}
+
+.annealing-further-heading p,
+.stage-comparison-note {
+  margin: 5px 0 0;
+  color: var(--color-subtle);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.annealing-further-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.annealing-further-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dbe5ef;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.annealing-further-card span,
+.annealing-further-card small {
+  color: var(--color-subtle);
+  font-size: 11px;
+}
+
+.annealing-further-card strong {
+  color: var(--color-primary);
+  font-family: var(--font-data);
+  font-size: 15px;
+}
+
+.annealing-further-card.tone-success {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.annealing-further-card.tone-success small {
+  color: var(--color-success);
+  font-weight: 700;
+}
+
+.annealing-further-card.tone-danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.annealing-further-card.tone-danger small {
+  color: var(--color-danger);
+  font-weight: 700;
+}
+
+.stage-comparison-note {
+  margin: 0;
+  padding: 0 18px 14px;
 }
 
 .optimization-summary-grid {
@@ -2256,10 +2506,18 @@ function round(value, digits = 0) {
   .outcome-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .annealing-further-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1280px) {
   .optimization-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .annealing-further-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2297,6 +2555,7 @@ function round(value, digits = 0) {
   .bottleneck-summary-grid,
   .bottleneck-change-grid,
   .outcome-kpi-grid,
+  .annealing-further-grid,
   .source-stat-grid,
   .route-metrics,
   .progress-kpis,

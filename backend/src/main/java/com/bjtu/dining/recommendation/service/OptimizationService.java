@@ -34,6 +34,7 @@ import org.springframework.stereotype.Service;
 public class OptimizationService {
     private static final int MAX_STORED_JOBS = 80;
     private static final int OVERLOAD_THRESHOLD = 10;
+    private static final int EXTREME_OVERLOAD_THRESHOLD = 15;
     private static final Logger log = LoggerFactory.getLogger(OptimizationService.class);
     private static final Set<String> VALID_CROWD_LEVELS = Set.of("IDLE", "NORMAL", "BUSY", "EXTREME");
 
@@ -117,18 +118,28 @@ public class OptimizationService {
             DiversionStrategyParameters currentParameters = state.initialParameters();
             CandidateEvaluation currentEvaluation = null;
             CandidateEvaluation bestEvaluation = null;
+            List<Long> referenceSourceWindowIds = List.of();
 
             for (int iteration = 1; iteration <= state.totalIterations(); iteration++) {
                 double temperature = temperature(iteration, state.totalIterations());
-                DiversionStrategyParameters candidateParameters = iteration == 1
-                        ? currentParameters
-                        : perturb(currentParameters, temperature, random);
+                DiversionStrategyParameters candidateParameters = candidateParameters(
+                        iteration,
+                        state.initialParameters(),
+                        currentParameters,
+                        bestEvaluation,
+                        temperature,
+                        random
+                );
                 CandidateEvaluation candidate = evaluate(
                         state.baseRunId(),
                         minute,
                         targetCrowdLevel,
-                        candidateParameters
+                        candidateParameters,
+                        referenceSourceWindowIds
                 );
+                if (iteration == 1) {
+                    referenceSourceWindowIds = candidate.sourceWindowIds();
+                }
 
                 boolean accepted = currentEvaluation == null
                         || candidate.loss() <= currentEvaluation.loss()
@@ -180,7 +191,8 @@ public class OptimizationService {
             Long baseRunId,
             Integer minute,
             String targetCrowdLevel,
-            DiversionStrategyParameters parameters
+            DiversionStrategyParameters parameters,
+            List<Long> referenceSourceWindowIds
     ) {
         TaskADtos.SimulationRunResult baseRun = simulationService.getRunResult(baseRunId);
         DiversionComparisonResult result = recommendationService.runDiversionComparison(
@@ -192,15 +204,25 @@ public class OptimizationService {
                         parameters
                 )
         );
-        EvaluationMetrics base = result.baseMetrics();
-        EvaluationMetrics compare = result.compareMetrics() == null ? base : result.compareMetrics();
+        EvaluationMetrics compare = result.compareMetrics() == null
+                ? result.baseMetrics()
+                : result.compareMetrics();
         int suggestionCount = result.diversionResult() == null
                 ? 0
                 : result.diversionResult().suggestions().size();
-        List<Long> sourceWindowIds = result.diversionResult() == null
+        List<Long> candidateSourceWindowIds = result.diversionResult() == null
                 ? List.of()
                 : result.diversionResult().suggestions().stream()
                         .map(item -> item.fromWindowId())
+                        .distinct()
+                        .toList();
+        List<Long> sourceWindowIds = referenceSourceWindowIds == null || referenceSourceWindowIds.isEmpty()
+                ? candidateSourceWindowIds
+                : referenceSourceWindowIds;
+        List<Long> targetWindowIds = result.diversionResult() == null
+                ? List.of()
+                : result.diversionResult().suggestions().stream()
+                        .map(item -> item.toWindowId())
                         .distinct()
                         .toList();
         TaskADtos.SimulationRunResult compareRun = result.compareRunId() == null
@@ -210,17 +232,25 @@ public class OptimizationService {
                 compareRun,
                 result.minute(),
                 sourceWindowIds,
+                targetWindowIds,
                 compare.unservedUserCount()
         );
-        LocalLossContext localContext = buildLocalLossContext(baseRun, result);
-        double loss = calculateLoss(base, compare, localContext, suggestionCount);
+        OptimizationBottleneckMetrics baselineMetrics = buildBottleneckMetrics(
+                baseRun,
+                result.minute(),
+                sourceWindowIds,
+                targetWindowIds,
+                result.baseMetrics().unservedUserCount()
+        );
+        double loss = calculateLoss(compare, baselineMetrics, bottleneckMetrics, suggestionCount);
         return new CandidateEvaluation(
                 DiversionStrategyParameters.resolve(parameters),
                 loss,
                 result.compareRunId(),
                 compare,
                 bottleneckMetrics,
-                suggestionCount
+                suggestionCount,
+                List.copyOf(sourceWindowIds)
         );
     }
 
@@ -228,6 +258,7 @@ public class OptimizationService {
             TaskADtos.SimulationRunResult run,
             int minute,
             List<Long> sourceWindowIds,
+            List<Long> targetWindowIds,
             int unservedUserCount
     ) {
         TaskADtos.SimulationTimePoint comparisonPoint = timePointAt(run, minute);
@@ -253,14 +284,29 @@ public class OptimizationService {
         int maxSingleWindowQueue = 0;
         int peakTotalQueue = 0;
         int totalOverload = 0;
+        int extremeOverloadSeverity = 0;
+        int targetWindowOverload = 0;
+        double loadImbalancePenalty = 0.0;
+        Set<Long> targetWindowIdSet = Set.copyOf(targetWindowIds);
         for (TaskADtos.SimulationTimePoint point : run.timePoints()) {
             int pointTotalQueue = 0;
             for (TaskADtos.RestaurantTimePoint restaurant : point.restaurants()) {
+                double averageRestaurantQueue = restaurant.windows().stream()
+                        .mapToInt(TaskADtos.QueueState::queueLength)
+                        .average()
+                        .orElse(0.0);
                 for (TaskADtos.QueueState window : restaurant.windows()) {
                     int queueLength = window.queueLength();
                     pointTotalQueue += queueLength;
                     maxSingleWindowQueue = Math.max(maxSingleWindowQueue, queueLength);
                     totalOverload += Math.max(queueLength - OVERLOAD_THRESHOLD, 0);
+                    int extremeExcess = Math.max(queueLength - EXTREME_OVERLOAD_THRESHOLD, 0);
+                    extremeOverloadSeverity += extremeExcess * extremeExcess;
+                    if (targetWindowIdSet.contains(window.windowId())) {
+                        targetWindowOverload += Math.max(queueLength - OVERLOAD_THRESHOLD, 0);
+                    }
+                    double deviation = queueLength - averageRestaurantQueue;
+                    loadImbalancePenalty += deviation * deviation;
                 }
             }
             peakTotalQueue = Math.max(peakTotalQueue, pointTotalQueue);
@@ -272,68 +318,119 @@ public class OptimizationService {
                 maxSingleWindowQueue,
                 peakTotalQueue,
                 totalOverload,
+                extremeOverloadSeverity,
+                targetWindowOverload,
+                round(loadImbalancePenalty),
                 unservedUserCount
         );
     }
 
     private double calculateLoss(
-            EvaluationMetrics base,
             EvaluationMetrics compare,
-            LocalLossContext localContext,
+            OptimizationBottleneckMetrics baseline,
+            OptimizationBottleneckMetrics bottleneck,
             int suggestionCount
     ) {
-        double loss = (compare.avgWaitMinutes() - base.avgWaitMinutes()) * 1.5
-                + (compare.maxWaitMinutes() - base.maxWaitMinutes()) * 0.8
-                + (compare.maxQueueLength() - base.maxQueueLength()) * 1.2
-                + (compare.busyWindowCount() - base.busyWindowCount()) * 2.5
-                + (compare.extremeWindowCount() - base.extremeWindowCount()) * 5.0
-                + (compare.unservedUserCount() - base.unservedUserCount()) * 1.2;
-        if (localContext != null) {
-            loss += (localContext.compareTopQueueSum() - localContext.baseTopQueueSum()) * 1.4;
-            loss += (localContext.compareSourceQueueSum() - localContext.baseSourceQueueSum()) * 1.6;
-            loss += (localContext.compareMaxWindowQueue() - localContext.baseMaxWindowQueue()) * 2.0;
-            loss += (localContext.compareBusyWindows() - localContext.baseBusyWindows()) * 2.0;
-            loss += (localContext.compareExtremeWindows() - localContext.baseExtremeWindows()) * 4.0;
-            loss += (localContext.compareAvgWindowWait() - localContext.baseAvgWindowWait()) * 4.0;
-        }
+        double sourceQueue = bottleneck.sourceWindowQueueTotal() == null
+                ? 0.0
+                : bottleneck.sourceWindowQueueTotal();
+        double sourceWait = bottleneck.sourceWindowAverageWait() == null
+                ? 0.0
+                : bottleneck.sourceWindowAverageWait();
+        double baselineSourceQueue = baseline.sourceWindowQueueTotal() == null
+                ? sourceQueue
+                : baseline.sourceWindowQueueTotal();
+        double baselineSourceWait = baseline.sourceWindowAverageWait() == null
+                ? sourceWait
+                : baseline.sourceWindowAverageWait();
+        double sourceQueueRelief = Math.max(0.0, baselineSourceQueue - sourceQueue);
+        double sourceWaitRelief = Math.max(0.0, baselineSourceWait - sourceWait);
+        double loss = sourceQueue * 3.2
+                + sourceWait * 7.0
+                + bottleneck.maxSingleWindowQueue() * 5.0
+                + bottleneck.peakTotalQueue() * 0.08
+                + bottleneck.totalOverload() * 2.4
+                + bottleneck.extremeOverloadSeverity() * 0.35
+                + bottleneck.targetWindowOverload() * 1.4
+                + bottleneck.loadImbalancePenalty() * 0.10
+                + bottleneck.unservedUserCount() * 30.0
+                + compare.avgWaitMinutes()
+                + compare.maxWaitMinutes() * 0.20
+                - sourceQueueRelief * 1.8
+                - sourceWaitRelief * 4.0;
         if (suggestionCount == 0) {
-            loss += 25.0;
+            loss += 250.0;
         }
         return round(loss);
     }
 
-    private LocalLossContext buildLocalLossContext(
-            TaskADtos.SimulationRunResult baseRun,
-            DiversionComparisonResult result
+    private DiversionStrategyParameters candidateParameters(
+            int iteration,
+            DiversionStrategyParameters initial,
+            DiversionStrategyParameters current,
+            CandidateEvaluation best,
+            double temperature,
+            Random random
     ) {
-        if (result.compareRunId() == null || result.diversionResult() == null) {
-            return null;
+        if (iteration == 1) {
+            return initial;
         }
-        TaskADtos.SimulationRunResult compareRun = simulationService.getRunResult(result.compareRunId());
-        TaskADtos.SimulationTimePoint basePoint = timePointAt(baseRun, result.minute());
-        TaskADtos.SimulationTimePoint comparePoint = timePointAt(compareRun, result.minute());
-        if (basePoint == null || comparePoint == null) {
-            return null;
+        if (iteration == 2) {
+            return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
+                    initial.sourcePressureScale(),
+                    initial.targetPressureBufferScale(),
+                    initial.transferScale(),
+                    initial.maxTransferCount(),
+                    0.35,
+                    0.10,
+                    1.2,
+                    1.4,
+                    6.0
+            ));
         }
-
-        List<Long> sourceWindowIds = result.diversionResult().suggestions().stream()
-                .map(item -> item.fromWindowId())
-                .distinct()
-                .toList();
-        return new LocalLossContext(
-                topQueueSum(basePoint, 5),
-                topQueueSum(comparePoint, 5),
-                windowQueueSum(basePoint, sourceWindowIds),
-                windowQueueSum(comparePoint, sourceWindowIds),
-                maxWindowQueue(basePoint),
-                maxWindowQueue(comparePoint),
-                averageWindowWait(basePoint),
-                averageWindowWait(comparePoint),
-                busyWindowCount(basePoint),
-                busyWindowCount(comparePoint),
-                extremeWindowCount(basePoint),
-                extremeWindowCount(comparePoint)
-        );
+        if (iteration == 3) {
+            return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
+                    0.45,
+                    2.2,
+                    2.4,
+                    160,
+                    0.42,
+                    0.115,
+                    1.35,
+                    1.8,
+                    2.0
+            ));
+        }
+        if (iteration == 4) {
+            return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
+                    0.55,
+                    1.5,
+                    1.9,
+                    130,
+                    0.30,
+                    0.09,
+                    1.65,
+                    1.25,
+                    4.0
+            ));
+        }
+        if (iteration == 5) {
+            return DiversionStrategyParameters.resolve(new DiversionStrategyParameters(
+                    0.65,
+                    2.4,
+                    2.6,
+                    180,
+                    0.45,
+                    0.12,
+                    1.1,
+                    2.1,
+                    0.5
+            ));
+        }
+        DiversionStrategyParameters searchCenter = best != null && random.nextDouble() < 0.72
+                ? best.parameters()
+                : current;
+        return perturb(searchCenter, temperature, random);
     }
 
     private DiversionStrategyParameters perturb(
@@ -348,7 +445,10 @@ public class OptimizationService {
                 current.transferScale() + random.nextGaussian() * 0.24 * scale,
                 current.maxTransferCount() + (int) Math.round(random.nextGaussian() * 18 * scale),
                 current.acceptanceBias() + random.nextGaussian() * 0.07 * scale,
-                current.waitReductionWeight() + random.nextGaussian() * 0.012 * scale
+                current.waitReductionWeight() + random.nextGaussian() * 0.018 * scale,
+                current.pressureWaitWeight() + random.nextGaussian() * 0.18 * scale,
+                current.pressureQueueWeight() + random.nextGaussian() * 0.22 * scale,
+                current.crossRestaurantPenalty() + random.nextGaussian() * 2.5 * scale
         ));
     }
 
@@ -416,23 +516,8 @@ public class OptimizationService {
             Long compareRunId,
             EvaluationMetrics metrics,
             OptimizationBottleneckMetrics bottleneckMetrics,
-            int suggestionCount
-    ) {
-    }
-
-    private record LocalLossContext(
-            int baseTopQueueSum,
-            int compareTopQueueSum,
-            int baseSourceQueueSum,
-            int compareSourceQueueSum,
-            int baseMaxWindowQueue,
-            int compareMaxWindowQueue,
-            double baseAvgWindowWait,
-            double compareAvgWindowWait,
-            int baseBusyWindows,
-            int compareBusyWindows,
-            int baseExtremeWindows,
-            int compareExtremeWindows
+            int suggestionCount,
+            List<Long> sourceWindowIds
     ) {
     }
 
@@ -441,59 +526,6 @@ public class OptimizationService {
                 .filter(point -> point.minute() == minute)
                 .findFirst()
                 .orElse(null);
-    }
-
-    private int topQueueSum(TaskADtos.SimulationTimePoint point, int limit) {
-        return point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .map(TaskADtos.QueueState::queueLength)
-                .sorted(java.util.Comparator.reverseOrder())
-                .limit(limit)
-                .mapToInt(Integer::intValue)
-                .sum();
-    }
-
-    private int windowQueueSum(TaskADtos.SimulationTimePoint point, List<Long> windowIds) {
-        if (windowIds.isEmpty()) {
-            return 0;
-        }
-        Set<Long> windowIdSet = Set.copyOf(windowIds);
-        return point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .filter(window -> windowIdSet.contains(window.windowId()))
-                .mapToInt(TaskADtos.QueueState::queueLength)
-                .sum();
-    }
-
-    private int maxWindowQueue(TaskADtos.SimulationTimePoint point) {
-        return point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .mapToInt(TaskADtos.QueueState::queueLength)
-                .max()
-                .orElse(0);
-    }
-
-    private double averageWindowWait(TaskADtos.SimulationTimePoint point) {
-        return point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .filter(window -> !"CLOSED".equals(window.status()))
-                .mapToDouble(TaskADtos.QueueState::waitMinutes)
-                .average()
-                .orElse(0.0);
-    }
-
-    private int busyWindowCount(TaskADtos.SimulationTimePoint point) {
-        return (int) point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .filter(window -> "BUSY".equals(window.crowdLevel()))
-                .count();
-    }
-
-    private int extremeWindowCount(TaskADtos.SimulationTimePoint point) {
-        return (int) point.restaurants().stream()
-                .flatMap(restaurant -> restaurant.windows().stream())
-                .filter(window -> "EXTREME".equals(window.crowdLevel()))
-                .count();
     }
 
     private static final class OptimizationState {

@@ -38,7 +38,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   })
   const strategyParameters = reactive(defaultStrategyParameters())
   const optimizationSettings = reactive({
-    iterationCount: 12,
+    iterationCount: 100,
     randomSeed: 20260613,
   })
 
@@ -600,12 +600,15 @@ function normalizeOptimizationBest(result) {
 
 function defaultStrategyParameters() {
   return {
-    sourcePressureScale: 1,
-    targetPressureBufferScale: 1,
-    transferScale: 1,
-    maxTransferCount: 60,
-    acceptanceBias: 0,
-    waitReductionWeight: 0.032,
+    sourcePressureScale: 1.4,
+    targetPressureBufferScale: 0.85,
+    transferScale: 0.52,
+    maxTransferCount: 20,
+    acceptanceBias: -0.18,
+    waitReductionWeight: 0.018,
+    pressureWaitWeight: 1,
+    pressureQueueWeight: 1,
+    crossRestaurantPenalty: 14,
   }
 }
 

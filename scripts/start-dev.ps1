@@ -1,7 +1,12 @@
+param(
+    [switch] $Reuse
+)
+
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $runtimeDir = Join-Path $projectRoot '.dev'
+$processFile = Join-Path $runtimeDir 'processes.json'
 $backendDir = Join-Path $projectRoot 'backend'
 $frontendDir = Join-Path $projectRoot 'frontend'
 
@@ -45,6 +50,41 @@ function Wait-ForPort([int] $Port, [string] $Label) {
         Start-Sleep -Milliseconds 250
     }
     throw "$Label did not start on port $Port. Check the logs under $runtimeDir"
+}
+
+function Stop-ProjectProcess([int] $ProcessId) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    if ($process -and $process.CommandLine -like "*$projectRoot*") {
+        Stop-Process -Id $ProcessId -Force
+        Write-Host "Stopped previous project process $ProcessId."
+    }
+}
+
+if (-not $Reuse) {
+    if (Test-Path $processFile) {
+        $recordedProcesses = Get-Content $processFile -Raw | ConvertFrom-Json
+        foreach ($recordedPid in @(
+            $recordedProcesses.backendPid,
+            $recordedProcesses.frontendPid,
+            $recordedProcesses.backendLauncherPid,
+            $recordedProcesses.frontendLauncherPid
+        )) {
+            if ($recordedPid) {
+                Stop-ProjectProcess ([int] $recordedPid)
+            }
+        }
+        Remove-Item -LiteralPath $processFile -Force
+    }
+
+    foreach ($port in @(8080, 5173)) {
+        $listenerPid = Get-ListeningProcessId $port
+        if ($listenerPid) {
+            Assert-ProjectProcess $listenerPid "Development service"
+            Stop-ProjectProcess $listenerPid
+        }
+    }
+
+    Start-Sleep -Milliseconds 500
 }
 
 if (-not (Test-Path (Join-Path $frontendDir 'node_modules'))) {

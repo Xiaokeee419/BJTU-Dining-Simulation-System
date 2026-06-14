@@ -6,10 +6,23 @@ public record DiversionStrategyParameters(
         Double transferScale,
         Integer maxTransferCount,
         Double acceptanceBias,
-        Double waitReductionWeight
+        Double waitReductionWeight,
+        Double pressureWaitWeight,
+        Double pressureQueueWeight,
+        Double crossRestaurantPenalty
 ) {
     public static DiversionStrategyParameters defaults() {
-        return new DiversionStrategyParameters(1.0, 1.0, 1.0, 60, 0.0, 0.032);
+        return new DiversionStrategyParameters(
+                1.4,
+                0.85,
+                0.52,
+                20,
+                -0.18,
+                0.018,
+                1.0,
+                1.0,
+                14.0
+        );
     }
 
     public static DiversionStrategyParameters resolve(DiversionStrategyParameters raw) {
@@ -18,12 +31,15 @@ public record DiversionStrategyParameters(
             return defaults;
         }
         return new DiversionStrategyParameters(
-                clamp(raw.sourcePressureScale(), 0.5, 1.6, defaults.sourcePressureScale()),
-                clamp(raw.targetPressureBufferScale(), 0.5, 1.8, defaults.targetPressureBufferScale()),
-                clamp(raw.transferScale(), 0.4, 1.8, defaults.transferScale()),
-                clampInt(raw.maxTransferCount(), 5, 120, defaults.maxTransferCount()),
-                clamp(raw.acceptanceBias(), -0.2, 0.25, defaults.acceptanceBias()),
-                clamp(raw.waitReductionWeight(), 0.005, 0.08, defaults.waitReductionWeight())
+                clamp(raw.sourcePressureScale(), 0.35, 1.8, defaults.sourcePressureScale()),
+                clamp(raw.targetPressureBufferScale(), 0.3, 2.5, defaults.targetPressureBufferScale()),
+                clamp(raw.transferScale(), 0.25, 2.8, defaults.transferScale()),
+                clampInt(raw.maxTransferCount(), 3, 180, defaults.maxTransferCount()),
+                clamp(raw.acceptanceBias(), -0.3, 0.45, defaults.acceptanceBias()),
+                clamp(raw.waitReductionWeight(), 0.003, 0.12, defaults.waitReductionWeight()),
+                clamp(raw.pressureWaitWeight(), 0.5, 1.8, defaults.pressureWaitWeight()),
+                clamp(raw.pressureQueueWeight(), 0.5, 2.2, defaults.pressureQueueWeight()),
+                clamp(raw.crossRestaurantPenalty(), 0.0, 18.0, defaults.crossRestaurantPenalty())
         );
     }
 
