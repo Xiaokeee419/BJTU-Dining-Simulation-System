@@ -166,16 +166,60 @@
           description="先用规则分流验证：从最拥挤窗口向可承接窗口导流，看看拥堵是否真的缓解。"
         />
 
-        <div class="comparison-kpi-grid">
-          <MetricBlock
-            v-for="card in comparisonKpiCards"
-            :key="card.label"
-            :label="card.label"
-            :value="card.value"
-            :unit="card.unit"
-            :tone="card.tone"
+        <section class="dashboard-panel bottleneck-panel">
+          <header class="panel-heading">
+            <div>
+              <h2>规则分流前后瓶颈缓解对比</h2>
+              <p>
+                分流策略主要用于缓解高峰期局部窗口拥堵，因此重点比较来源窗口排队、最大队列和过载程度变化。
+              </p>
+            </div>
+            <span class="status-chip">
+              {{ compareRun ? `Compare #${compareRun.runId}` : '等待验证分流' }}
+            </span>
+          </header>
+
+          <div class="bottleneck-summary-grid">
+            <article
+              v-for="card in bottleneckSummaryCards"
+              :key="card.label"
+              class="bottleneck-summary-card"
+              :class="card.tone ? `tone-${card.tone}` : ''"
+            >
+              <span>{{ card.label }}</span>
+              <strong>{{ card.value }}</strong>
+              <small>{{ card.detail }}</small>
+            </article>
+          </div>
+
+          <DashboardChart
+            class="bottleneck-chart"
+            title="五项核心瓶颈指标"
+            subtitle="同一口径下对比 Baseline 与 Compare；数值越低表示拥堵缓解越明显。"
+            :option="bottleneckComparisonOption"
+            :loading="loading.comparison"
+            :empty="!compareRun"
+            :height="320"
           />
-        </div>
+
+          <div class="bottleneck-change-grid">
+            <article
+              v-for="item in bottleneckMetricRows"
+              :key="item.key"
+              :class="['bottleneck-change-item', item.tone ? `tone-${item.tone}` : '']"
+            >
+              <span>{{ item.label }}</span>
+              <strong>{{ item.baselineLabel }} → {{ item.compareLabel }}</strong>
+              <small>{{ item.changeLabel }}</small>
+            </article>
+          </div>
+
+          <p class="bottleneck-diagnostic">
+            如果“来源窗口总排队人数”在分流后几乎没有变化，说明 compareRun
+            可能没有真正执行分流建议，或者分流强度过低，需要进一步检查后端
+            runSimulationWithDiversion / diversion-comparison 逻辑。
+          </p>
+        </section>
 
         <section class="dashboard-panel">
           <header class="panel-heading">
@@ -220,25 +264,6 @@
           </div>
         </section>
 
-        <div class="chart-grid">
-          <DashboardChart
-            title="规则分流前后等待对比"
-            subtitle="先看等待是否下降，避免只转移人流但没有真正缓解体验。"
-            :option="waitComparisonOption"
-            :loading="loading.comparison"
-            :empty="!comparison"
-            :height="250"
-          />
-          <DashboardChart
-            title="规则分流前后拥挤对比"
-            subtitle="重点看最大队列、未服务人数和高压窗口总量。"
-            :option="queueComparisonOption"
-            :loading="loading.comparison"
-            :empty="!comparison"
-            :height="250"
-          />
-        </div>
-
         <section class="dashboard-panel">
           <header class="panel-heading">
             <div>
@@ -279,7 +304,7 @@
               <el-input-number
                 v-model="optimizationSettings.iterationCount"
                 :min="1"
-                :max="60"
+                :max="200"
               />
             </label>
             <label>
@@ -383,7 +408,7 @@
           />
           <DashboardChart
             title="迭代中的关键拥挤指标"
-            subtitle="同步观察最大队列、未服务人数和高压窗口总量是否回落。"
+            subtitle="同步观察最大单窗口排队、总过载程度和来源窗口总排队是否回落。"
             :option="optimizationMetricOption"
             :loading="loading.optimization && !optimizationIterations.length"
             :empty="!optimizationIterations.length"
@@ -420,12 +445,31 @@
             <el-table-column label="Best" width="70">
               <template #default="{ row }">{{ row.best ? '✓' : '' }}</template>
             </el-table-column>
-            <el-table-column prop="metrics.avgWaitMinutes" label="平均等待" width="100" />
-            <el-table-column prop="metrics.maxWaitMinutes" label="最大等待" width="100" />
-            <el-table-column prop="metrics.maxQueueLength" label="最大队列" width="96" />
-            <el-table-column prop="metrics.unservedUserCount" label="未服务" width="86" />
-            <el-table-column prop="metrics.busyWindowCount" label="忙碌窗口" width="96" />
-            <el-table-column prop="metrics.extremeWindowCount" label="极端窗口" width="96" />
+            <el-table-column
+              prop="bottleneckMetrics.sourceWindowQueueTotal"
+              label="来源队列"
+              width="96"
+            />
+            <el-table-column
+              prop="bottleneckMetrics.sourceWindowAverageWait"
+              label="来源等待"
+              width="96"
+            />
+            <el-table-column
+              prop="bottleneckMetrics.maxSingleWindowQueue"
+              label="最大单窗"
+              width="96"
+            />
+            <el-table-column
+              prop="bottleneckMetrics.peakTotalQueue"
+              label="峰值总排队"
+              width="108"
+            />
+            <el-table-column
+              prop="bottleneckMetrics.totalOverload"
+              label="总过载"
+              width="88"
+            />
             <el-table-column prop="compareRunId" label="Compare Run" min-width="120" />
           </el-table>
         </section>
@@ -468,6 +512,7 @@ const {
   optimizationJob,
   optimizationIterations,
   optimizationBest,
+  optimizationBestRun,
   loading,
   requestStatus,
   lastError,
@@ -602,43 +647,150 @@ const compareComparisonPoint = computed(() =>
   resolveTimePoint(compareRun.value, comparisonMinute.value),
 )
 
-const comparisonSuggestedCount = computed(() =>
-  (diversionResult.value?.suggestions || []).reduce(
-    (sum, item) =>
-      sum + Number(item.estimatedAcceptedCount ?? item.suggestedUserCount ?? 0),
-    0,
+const overloadThreshold = 10
+
+const diversionSuggestions = computed(() =>
+  Array.isArray(diversionResult.value?.suggestions)
+    ? diversionResult.value.suggestions
+    : [],
+)
+
+const sourceWindowIds = computed(() =>
+  [
+    ...new Set(
+      diversionSuggestions.value
+        .map(resolveSuggestionSourceWindowId)
+        .filter((windowId) => windowId !== null),
+    ),
+  ],
+)
+
+const suggestedDiversionCount = computed(() =>
+  sumSuggestionField(diversionSuggestions.value, 'suggestedUserCount'),
+)
+
+const estimatedAcceptedCount = computed(() =>
+  sumSuggestionField(diversionSuggestions.value, 'estimatedAcceptedCount'),
+)
+
+const baselineBottleneckMetrics = computed(() =>
+  buildBottleneckMetrics(
+    currentRun.value,
+    baseComparisonPoint.value,
+    sourceWindowIds.value,
   ),
 )
 
-const comparisonCrowdedDelta = computed(() => {
-  const value = comparison.value
-  if (!value) return null
-  return Number(value.busyWindowCountDelta || 0) + Number(value.extremeWindowCountDelta || 0)
+const strategyBottleneckMetrics = computed(() =>
+  buildBottleneckMetrics(
+    compareRun.value,
+    compareComparisonPoint.value,
+    sourceWindowIds.value,
+  ),
+)
+
+const optimizationComparisonMinute = computed(
+  () => optimizationBest.value?.minute ?? comparisonMinute.value,
+)
+
+const optimizedComparisonPoint = computed(() =>
+  resolveTimePoint(optimizationBestRun.value, optimizationComparisonMinute.value),
+)
+
+const optimizedBottleneckMetrics = computed(() => {
+  if (optimizationBestRun.value) {
+    return buildBottleneckMetrics(
+      optimizationBestRun.value,
+      optimizedComparisonPoint.value,
+      sourceWindowIds.value,
+    )
+  }
+  return normalizeOptimizationBottleneckMetrics(
+    optimizationBest.value?.bottleneckMetrics,
+    optimizationBest.value?.metrics,
+  )
 })
 
-const comparisonKpiCards = computed(() => [
+const bottleneckMetricRows = computed(() => {
+  const baseline = baselineBottleneckMetrics.value
+  const compare = strategyBottleneckMetrics.value
+
+  return [
+    bottleneckMetricRow(
+      'sourceQueue',
+      '来源窗口总排队',
+      baseline.sourceQueue,
+      compare.sourceQueue,
+      0,
+      '人',
+    ),
+    bottleneckMetricRow(
+      'sourceWait',
+      '来源窗口平均等待',
+      baseline.sourceWait,
+      compare.sourceWait,
+      1,
+      '分钟',
+    ),
+    bottleneckMetricRow(
+      'maxWindowQueue',
+      '最大单窗排队',
+      baseline.maxWindowQueue,
+      compare.maxWindowQueue,
+      0,
+      '人',
+    ),
+    bottleneckMetricRow(
+      'peakTotalQueue',
+      '峰值总排队',
+      baseline.peakTotalQueue,
+      compare.peakTotalQueue,
+      0,
+      '人',
+    ),
+    bottleneckMetricRow(
+      'totalOverload',
+      '总过载程度',
+      baseline.totalOverload,
+      compare.totalOverload,
+      0,
+      '',
+    ),
+  ]
+})
+
+const sourceQueueMetric = computed(() =>
+  bottleneckMetricRows.value.find((item) => item.key === 'sourceQueue'),
+)
+
+const overloadMetric = computed(() =>
+  bottleneckMetricRows.value.find((item) => item.key === 'totalOverload'),
+)
+
+const bottleneckSummaryCards = computed(() => [
   {
-    label: '建议承接人数',
-    value: comparisonSuggestedCount.value,
-    unit: '人',
+    label: '建议分流人数',
+    value: formatMetricValue(suggestedDiversionCount.value, 0, '人'),
+    detail: diversionSuggestions.value.length
+      ? `${diversionSuggestions.value.length} 条分流建议`
+      : '等待生成分流建议',
   },
   {
-    label: '平均等待变化',
-    value: formatSignedNumber(comparison.value?.avgWaitDelta, 1),
-    unit: '分钟',
-    tone: lowerBetterTone(comparison.value?.avgWaitDelta),
+    label: '预计接受人数',
+    value: formatMetricValue(estimatedAcceptedCount.value, 0, '人'),
+    detail: diversionSuggestions.value.length ? '按建议接受率估算' : '等待生成分流建议',
   },
   {
-    label: '最大队列变化',
-    value: formatSignedNumber(comparison.value?.maxQueueDelta, 0),
-    unit: '人',
-    tone: lowerBetterTone(comparison.value?.maxQueueDelta),
+    label: '来源窗口排队变化',
+    value: metricTransitionLabel(sourceQueueMetric.value),
+    detail: sourceQueueMetric.value?.changeLabel || '--',
+    tone: sourceQueueMetric.value?.tone,
   },
   {
-    label: '高压窗口变化',
-    value: formatSignedNumber(comparisonCrowdedDelta.value, 0),
-    unit: '个',
-    tone: lowerBetterTone(comparisonCrowdedDelta.value),
+    label: '总过载程度变化',
+    value: metricTransitionLabel(overloadMetric.value),
+    detail: overloadMetric.value?.percentLabel || overloadMetric.value?.changeLabel || '--',
+    tone: overloadMetric.value?.tone,
   },
 ])
 
@@ -709,95 +861,171 @@ const optimizationProgress = computed(() => {
   return total > 0 ? Math.round((current / total) * 100) : 0
 })
 
+const initialOptimizationLoss = computed(() => {
+  const firstIteration = optimizationIterations.value.find(
+    (item) => Number(item.iteration) === 1,
+  )
+  return isFiniteMetric(firstIteration?.loss) ? Number(firstIteration.loss) : null
+})
+
 const optimizationOutcomeCards = computed(() => {
-  const base = currentRun.value?.metrics
-  const best = optimizationBest.value?.metrics
-  const strategy = compareRun.value?.metrics
+  const baseline = baselineBottleneckMetrics.value
+  const strategy = strategyBottleneckMetrics.value
+  const optimized = optimizedBottleneckMetrics.value
+  const bestLoss = optimizationBest.value?.loss ?? optimizationJob.value?.bestLoss
+  const lossReductionRate = improvementPercent(initialOptimizationLoss.value, bestLoss)
 
   return [
     {
       label: 'Best Loss',
-      value: formatNumber(optimizationBest.value?.loss, 2),
+      value: formatNumber(bestLoss, 2),
       tone: 'success',
     },
     {
-      label: '最优 Compare Run',
-      value: optimizationBest.value?.compareRunId ?? '--',
+      label: 'Loss 下降率',
+      value: formatPercentChange(lossReductionRate),
+      tone: improvementTone(lossReductionRate),
     },
     {
-      label: '平均等待变化',
-      value: formatSignedNumber(metricDelta(base?.avgWaitMinutes, best?.avgWaitMinutes), 1),
-      unit: '分钟',
-      tone: lowerBetterTone(metricDelta(base?.avgWaitMinutes, best?.avgWaitMinutes)),
+      label: '来源窗口排队下降',
+      value: formatReductionSummary(baseline.sourceQueue, optimized.sourceQueue, 0, '人'),
+      tone: lowerBetterTone(metricDelta(baseline.sourceQueue, optimized.sourceQueue)),
     },
     {
-      label: '最大队列变化',
-      value: formatSignedNumber(metricDelta(base?.maxQueueLength, best?.maxQueueLength), 0),
-      unit: '人',
-      tone: lowerBetterTone(metricDelta(base?.maxQueueLength, best?.maxQueueLength)),
+      label: '最大单窗排队下降',
+      value: formatReductionSummary(
+        baseline.maxWindowQueue,
+        optimized.maxWindowQueue,
+        0,
+        '人',
+      ),
+      tone: lowerBetterTone(
+        metricDelta(baseline.maxWindowQueue, optimized.maxWindowQueue),
+      ),
     },
     {
-      label: '相对规则分流',
-      value: formatSignedNumber(metricDelta(strategy?.maxQueueLength, best?.maxQueueLength), 0),
-      unit: '人',
-      tone: lowerBetterTone(metricDelta(strategy?.maxQueueLength, best?.maxQueueLength)),
+      label: '总过载程度下降',
+      value: formatReductionSummary(
+        baseline.totalOverload,
+        optimized.totalOverload,
+        0,
+        '',
+      ),
+      tone: lowerBetterTone(metricDelta(baseline.totalOverload, optimized.totalOverload)),
+    },
+    {
+      label: '相对规则分流改善',
+      value: formatPercentChange(
+        improvementPercent(strategy.totalOverload, optimized.totalOverload),
+      ),
+      tone: improvementTone(
+        improvementPercent(strategy.totalOverload, optimized.totalOverload),
+      ),
     },
   ]
 })
 
 const optimizationMetricRows = computed(() => {
-  const base = currentRun.value?.metrics
-  const strategy = compareRun.value?.metrics
-  const best = optimizationBest.value?.metrics
+  const baseline = baselineBottleneckMetrics.value
+  const strategy = strategyBottleneckMetrics.value
+  const optimized = optimizedBottleneckMetrics.value
 
   return [
-    metricRow('平均等待（分钟）', base?.avgWaitMinutes, strategy?.avgWaitMinutes, best?.avgWaitMinutes, 1, '分钟'),
-    metricRow('最大等待（分钟）', base?.maxWaitMinutes, strategy?.maxWaitMinutes, best?.maxWaitMinutes, 1, '分钟'),
-    metricRow('最大队列（人）', base?.maxQueueLength, strategy?.maxQueueLength, best?.maxQueueLength, 0, '人'),
     metricRow(
-      '高压窗口（个）',
-      crowdedMetricCount(base),
-      crowdedMetricCount(strategy),
-      crowdedMetricCount(best),
+      '来源窗口总排队（人）',
+      baseline.sourceQueue,
+      strategy.sourceQueue,
+      optimized.sourceQueue,
       0,
-      '个',
+      '人',
+    ),
+    metricRow(
+      '来源窗口平均等待（分钟）',
+      baseline.sourceWait,
+      strategy.sourceWait,
+      optimized.sourceWait,
+      1,
+      '分钟',
+    ),
+    metricRow(
+      '最大单窗口排队（人）',
+      baseline.maxWindowQueue,
+      strategy.maxWindowQueue,
+      optimized.maxWindowQueue,
+      0,
+      '人',
+    ),
+    metricRow(
+      '峰值总排队人数（人）',
+      baseline.peakTotalQueue,
+      strategy.peakTotalQueue,
+      optimized.peakTotalQueue,
+      0,
+      '人',
+    ),
+    metricRow(
+      '总过载程度',
+      baseline.totalOverload,
+      strategy.totalOverload,
+      optimized.totalOverload,
+      0,
+      '',
     ),
     metricRow(
       '未服务人数（人）',
-      base?.unservedUserCount,
-      strategy?.unservedUserCount,
-      best?.unservedUserCount,
+      baseline.unservedUsers,
+      strategy.unservedUsers,
+      optimized.unservedUsers,
       0,
       '人',
+    ),
+    metricRow(
+      'Loss',
+      0,
+      initialOptimizationLoss.value,
+      optimizationBest.value?.loss ?? optimizationJob.value?.bestLoss,
+      2,
+      '',
     ),
   ]
 })
 
 const optimizationNarrative = computed(() => {
-  const base = currentRun.value?.metrics
-  const strategy = compareRun.value?.metrics
+  const baseline = baselineBottleneckMetrics.value
+  const strategy = strategyBottleneckMetrics.value
+  const optimized = optimizedBottleneckMetrics.value
   const best = optimizationBest.value
 
   if (!optimizationJob.value && !best) {
     return '模拟退火会在每一轮真实 compare 仿真后，根据拥挤缓解效果调整参数并记录 best。'
   }
-  if (!best?.metrics || !base) {
+  if (!best || !isFiniteMetric(optimized.totalOverload)) {
     return optimizationJob.value?.message || '优化进行中，等待最优方案结果产生。'
   }
 
-  const waitText = formatImprovementText(base.avgWaitMinutes, best.metrics.avgWaitMinutes, 1, '分钟')
-  const queueText = formatImprovementText(base.maxQueueLength, best.metrics.maxQueueLength, 0, '人')
-  const crowdedText = formatImprovementText(
-    crowdedMetricCount(base),
-    crowdedMetricCount(best.metrics),
+  const sourceQueueText = formatImprovementText(
+    baseline.sourceQueue,
+    optimized.sourceQueue,
     0,
-    '个',
+    '人',
   )
-  const extraQueueText = strategy
-    ? `相较规则分流，最大队列${formatImprovementText(strategy.maxQueueLength, best.metrics.maxQueueLength, 0, '人')}。`
+  const maxQueueText = formatImprovementText(
+    baseline.maxWindowQueue,
+    optimized.maxWindowQueue,
+    0,
+    '人',
+  )
+  const overloadText = formatImprovementText(
+    baseline.totalOverload,
+    optimized.totalOverload,
+    0,
+    '',
+  )
+  const extraOverloadText = isFiniteMetric(strategy.totalOverload)
+    ? `相较规则分流，总过载程度${formatImprovementText(strategy.totalOverload, optimized.totalOverload, 0, '')}。`
     : ''
 
-  return `当前 best run #${best.compareRunId} 相比 baseline 平均等待${waitText}，最大队列${queueText}，高压窗口${crowdedText}。${extraQueueText}`
+  return `当前 best run #${best.compareRunId} 相比 baseline 来源窗口排队${sourceQueueText}，最大单窗排队${maxQueueText}，总过载程度${overloadText}。${extraOverloadText}`
 })
 
 const actualArrivalCurvePoints = computed(() => {
@@ -918,37 +1146,70 @@ const windowLoadOption = computed(() => ({
   ],
 }))
 
-const waitComparisonOption = computed(() =>
-  comparisonBarOption(
-    ['平均等待', '最大等待'],
-    [
-      currentRun.value?.metrics?.avgWaitMinutes,
-      currentRun.value?.metrics?.maxWaitMinutes,
-    ],
-    [
-      compareRun.value?.metrics?.avgWaitMinutes,
-      compareRun.value?.metrics?.maxWaitMinutes,
-    ],
-    '分钟',
-  ),
-)
-
-const queueComparisonOption = computed(() =>
-  comparisonBarOption(
-    ['最大队列', '未服务人数', '高压窗口'],
-    [
-      currentRun.value?.metrics?.maxQueueLength,
-      currentRun.value?.metrics?.unservedUserCount,
-      crowdedMetricCount(currentRun.value?.metrics),
-    ],
-    [
-      compareRun.value?.metrics?.maxQueueLength,
-      compareRun.value?.metrics?.unservedUserCount,
-      crowdedMetricCount(compareRun.value?.metrics),
-    ],
-    '数量',
-  ),
-)
+const bottleneckComparisonOption = computed(() => ({
+  color: ['#94a3b8', '#0160a8'],
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: (params) => {
+      const index = Number(params?.[0]?.dataIndex ?? -1)
+      const row = bottleneckMetricRows.value[index]
+      if (!row) return ''
+      return [
+        row.label,
+        `Baseline：${row.baselineLabel}`,
+        `Compare：${row.compareLabel}`,
+        `变化：${row.changeLabel}`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 6, data: ['Baseline', 'Compare'] },
+  grid: { left: 58, right: 28, top: 48, bottom: 70 },
+  xAxis: {
+    type: 'category',
+    data: bottleneckMetricRows.value.map((item) => item.label),
+    axisLabel: {
+      interval: 0,
+      rotate: 18,
+      color: '#475569',
+    },
+  },
+  yAxis: {
+    type: 'value',
+    name: '指标值',
+    min: 0,
+    splitLine: { lineStyle: { color: '#e8edf4' } },
+  },
+  series: [
+    {
+      name: 'Baseline',
+      type: 'bar',
+      barMaxWidth: 34,
+      data: bottleneckMetricRows.value.map((item) => item.baseline),
+      itemStyle: {
+        color: '#94a3b8',
+        borderRadius: [6, 6, 0, 0],
+      },
+    },
+    {
+      name: 'Compare',
+      type: 'bar',
+      barMaxWidth: 34,
+      data: bottleneckMetricRows.value.map((item) => ({
+        value: item.compare,
+        itemStyle: {
+          color:
+            item.tone === 'success'
+              ? '#16a34a'
+              : item.tone === 'danger'
+                ? '#dc2626'
+                : '#0160a8',
+          borderRadius: [6, 6, 0, 0],
+        },
+      })),
+    },
+  ],
+}))
 
 const lossCurveOption = computed(() => ({
   color: ['#0160a8'],
@@ -976,7 +1237,7 @@ const lossCurveOption = computed(() => ({
 }))
 
 const optimizationMetricOption = computed(() => ({
-  color: ['#0160a8', '#f97316', '#c81e1e'],
+  color: ['#0160a8', '#f97316', '#16a34a'],
   tooltip: { trigger: 'axis' },
   legend: { top: 4 },
   grid: { left: 52, right: 24, top: 48, bottom: 40 },
@@ -987,19 +1248,28 @@ const optimizationMetricOption = computed(() => ({
   yAxis: { type: 'value' },
   series: [
     {
-      name: '最大队列',
+      name: '最大单窗口排队',
       type: 'line',
-      data: optimizationIterations.value.map((item) => item.metrics?.maxQueueLength ?? 0),
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.maxSingleWindowQueue),
+      ),
     },
     {
-      name: '未服务人数',
+      name: '总过载程度',
       type: 'line',
-      data: optimizationIterations.value.map((item) => item.metrics?.unservedUserCount ?? 0),
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.totalOverload),
+      ),
     },
     {
-      name: '高压窗口',
+      name: '来源窗口总排队',
       type: 'line',
-      data: optimizationIterations.value.map((item) => crowdedMetricCount(item.metrics)),
+      connectNulls: false,
+      data: optimizationIterations.value.map(
+        (item) => finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowQueueTotal),
+      ),
     },
   ],
 }))
@@ -1100,19 +1370,160 @@ async function handleOptimization() {
   }
 }
 
-function comparisonBarOption(labels, baseValues, compareValues, unit) {
-  return {
-    color: ['#9aa5b5', '#0160a8'],
-    tooltip: { trigger: 'axis' },
-    legend: { top: 4, data: ['Baseline', 'Compare'] },
-    grid: { left: 48, right: 20, top: 46, bottom: 34 },
-    xAxis: { type: 'category', data: labels },
-    yAxis: { type: 'value', name: unit },
-    series: [
-      { name: 'Baseline', type: 'bar', data: baseValues.map(numberOrZero), barMaxWidth: 28 },
-      { name: 'Compare', type: 'bar', data: compareValues.map(numberOrZero), barMaxWidth: 28 },
-    ],
+function resolveSuggestionSourceWindowId(suggestion) {
+  const value =
+    suggestion?.fromWindowId ??
+    suggestion?.sourceWindowId ??
+    suggestion?.sourceWindow?.windowId ??
+    suggestion?.sourceWindow?.id
+  return value === null || value === undefined || value === '' ? null : Number(value)
+}
+
+function sumSuggestionField(suggestions, field) {
+  if (!suggestions.length) return null
+  const values = suggestions
+    .map((suggestion) => suggestion?.[field])
+    .filter((value) => value !== null && value !== undefined && Number.isFinite(Number(value)))
+  return values.length ? values.reduce((sum, value) => sum + Number(value), 0) : null
+}
+
+function buildBottleneckMetrics(run, comparisonPoint, windowIds) {
+  const timePoints = Array.isArray(run?.timePoints) ? run.timePoints : []
+  const comparisonWindows = windowIds
+    .map((windowId) => findWindow(comparisonPoint, windowId))
+    .filter(Boolean)
+  const sourceWaitValues = comparisonWindows
+    .map(resolveWindowWait)
+    .filter((value) => value !== null)
+
+  let maxWindowQueue = null
+  let peakTotalQueue = null
+  let totalOverload = null
+
+  if (timePoints.length) {
+    maxWindowQueue = 0
+    peakTotalQueue = 0
+    totalOverload = 0
+    timePoints.forEach((point) => {
+      const windows = flattenWindows(point).map((entry) => entry.window)
+      const totalQueue = windows.reduce((sum, window) => sum + windowQueueLength(window), 0)
+      peakTotalQueue = Math.max(peakTotalQueue, totalQueue)
+      windows.forEach((window) => {
+        const queueLength = windowQueueLength(window)
+        maxWindowQueue = Math.max(maxWindowQueue, queueLength)
+        totalOverload += Math.max(queueLength - overloadThreshold, 0)
+      })
+    })
   }
+
+  return {
+    sourceQueue:
+      windowIds.length && comparisonWindows.length
+        ? comparisonWindows.reduce((sum, window) => sum + windowQueueLength(window), 0)
+        : null,
+    sourceWait: sourceWaitValues.length
+      ? sourceWaitValues.reduce((sum, value) => sum + value, 0) / sourceWaitValues.length
+      : null,
+    maxWindowQueue,
+    peakTotalQueue,
+    totalOverload,
+    unservedUsers: isFiniteMetric(run?.metrics?.unservedUserCount)
+      ? Number(run.metrics.unservedUserCount)
+      : null,
+  }
+}
+
+function normalizeOptimizationBottleneckMetrics(metrics, fallbackMetrics) {
+  if (!metrics) {
+    return {
+      sourceQueue: null,
+      sourceWait: null,
+      maxWindowQueue: isFiniteMetric(fallbackMetrics?.maxQueueLength)
+        ? Number(fallbackMetrics.maxQueueLength)
+        : null,
+      peakTotalQueue: null,
+      totalOverload: null,
+      unservedUsers: isFiniteMetric(fallbackMetrics?.unservedUserCount)
+        ? Number(fallbackMetrics.unservedUserCount)
+        : null,
+    }
+  }
+  return {
+    sourceQueue: finiteMetricOrNull(metrics.sourceWindowQueueTotal),
+    sourceWait: finiteMetricOrNull(metrics.sourceWindowAverageWait),
+    maxWindowQueue: finiteMetricOrNull(metrics.maxSingleWindowQueue),
+    peakTotalQueue: finiteMetricOrNull(metrics.peakTotalQueue),
+    totalOverload: finiteMetricOrNull(metrics.totalOverload),
+    unservedUsers: finiteMetricOrNull(
+      metrics.unservedUserCount ?? fallbackMetrics?.unservedUserCount,
+    ),
+  }
+}
+
+function bottleneckMetricRow(key, label, baseline, compare, digits, unit) {
+  const hasValues = isFiniteMetric(baseline) && isFiniteMetric(compare)
+  const delta = hasValues ? round(Number(compare) - Number(baseline), digits) : null
+  const percent =
+    hasValues && Number(baseline) !== 0
+      ? round(((Number(baseline) - Number(compare)) / Number(baseline)) * 100, 1)
+      : null
+
+  return {
+    key,
+    label,
+    baseline: isFiniteMetric(baseline) ? Number(baseline) : null,
+    compare: isFiniteMetric(compare) ? Number(compare) : null,
+    baselineLabel: formatMetricValue(baseline, digits, unit),
+    compareLabel: formatMetricValue(compare, digits, unit),
+    changeLabel: formatBottleneckChange(delta, digits, unit),
+    percentLabel: formatBottleneckPercent(delta, percent),
+    tone: lowerBetterTone(delta),
+  }
+}
+
+function resolveWindowWait(window) {
+  const value =
+    window?.waitMinutes ??
+    window?.avgWaitTime ??
+    window?.averageWaitTime ??
+    window?.avgWaitMinutes
+  return isFiniteMetric(value) ? Number(value) : null
+}
+
+function windowQueueLength(window) {
+  const value = window?.queueLength ?? window?.queueCount
+  return isFiniteMetric(value) ? Number(value) : 0
+}
+
+function isFiniteMetric(value) {
+  return value !== null && value !== undefined && Number.isFinite(Number(value))
+}
+
+function formatMetricValue(value, digits, unit) {
+  if (!isFiniteMetric(value)) return '--'
+  const suffix = unit ? ` ${unit}` : ''
+  return `${formatNumber(value, digits)}${suffix}`
+}
+
+function formatBottleneckChange(delta, digits, unit) {
+  if (!isFiniteMetric(delta)) return '--'
+  if (Number(delta) === 0) return '持平'
+  const suffix = unit ? ` ${unit}` : ''
+  const amount = `${formatNumber(Math.abs(delta), digits)}${suffix}`
+  return Number(delta) < 0 ? `减少 ${amount}` : `增加 ${amount}`
+}
+
+function formatBottleneckPercent(delta, percent) {
+  if (!isFiniteMetric(delta)) return '--'
+  if (Number(delta) === 0) return '持平'
+  if (!isFiniteMetric(percent)) return Number(delta) < 0 ? '下降' : '上升'
+  return Number(delta) < 0
+    ? `下降 ${formatNumber(Math.abs(percent), 1)}%`
+    : `上升 ${formatNumber(Math.abs(percent), 1)}%`
+}
+
+function metricTransitionLabel(metric) {
+  return metric ? `${metric.baselineLabel} → ${metric.compareLabel}` : '--'
 }
 
 function metricRow(label, baseline, strategy, optimized, digits, unit) {
@@ -1131,9 +1542,37 @@ function metricDelta(before, after) {
   return Number(after) - Number(before)
 }
 
-function crowdedMetricCount(metrics) {
-  if (!metrics) return null
-  return Number(metrics.busyWindowCount || 0) + Number(metrics.extremeWindowCount || 0)
+function improvementPercent(before, after) {
+  if (!isFiniteMetric(before) || !isFiniteMetric(after)) return null
+  if (Number(before) === 0) return Number(after) === 0 ? 0 : null
+  return ((Number(before) - Number(after)) / Math.abs(Number(before))) * 100
+}
+
+function improvementTone(value) {
+  if (!isFiniteMetric(value)) return ''
+  if (Number(value) > 0) return 'success'
+  if (Number(value) < 0) return 'danger'
+  return ''
+}
+
+function formatPercentChange(value) {
+  if (!isFiniteMetric(value)) return '--'
+  if (Number(value) === 0) return '持平'
+  const direction = Number(value) > 0 ? '下降' : '上升'
+  return `${direction} ${formatNumber(Math.abs(value), 1)}%`
+}
+
+function formatReductionSummary(before, after, digits, unit) {
+  const delta = metricDelta(before, after)
+  if (!isFiniteMetric(delta)) return '--'
+  if (Number(delta) === 0) return '持平'
+  const suffix = unit ? ` ${unit}` : ''
+  const amount = `${formatNumber(Math.abs(delta), digits)}${suffix}`
+  return Number(delta) < 0 ? `减少 ${amount}` : `增加 ${amount}`
+}
+
+function finiteMetricOrNull(value) {
+  return isFiniteMetric(value) ? Number(value) : null
 }
 
 function lowerBetterTone(delta) {
@@ -1171,10 +1610,6 @@ function crowdScore(level) {
   return { IDLE: 0, NORMAL: 0.4, BUSY: 1, EXTREME: 1.6 }[level] || 0
 }
 
-function numberOrZero(value) {
-  return Number.isFinite(Number(value)) ? Number(value) : 0
-}
-
 function formatNumber(value, digits = 1) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '--'
   return Number(value).toFixed(digits).replace(/\.0+$/, '')
@@ -1193,7 +1628,8 @@ function formatImprovementText(before, after, digits, unit) {
   const delta = round(Number(after) - Number(before), digits)
   if (delta === 0) return '持平'
   const absolute = formatNumber(Math.abs(delta), digits)
-  return delta < 0 ? `下降 ${absolute} ${unit}` : `上升 ${absolute} ${unit}`
+  const suffix = unit ? ` ${unit}` : ''
+  return delta < 0 ? `下降 ${absolute}${suffix}` : `上升 ${absolute}${suffix}`
 }
 
 function round(value, digits = 0) {
@@ -1325,8 +1761,124 @@ function round(value, digits = 0) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.outcome-kpi-grid {
+.bottleneck-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 18px 18px 0;
+}
+
+.bottleneck-summary-card {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid #e1e6ef;
+  border-radius: 8px;
+  background: #f8f9fc;
+}
+
+.bottleneck-summary-card > span {
+  color: var(--color-subtle);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bottleneck-summary-card strong {
+  overflow: hidden;
+  color: var(--color-primary);
+  font-family: var(--font-data);
+  font-size: 19px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottleneck-summary-card small {
+  color: var(--color-subtle);
+  font-size: 11px;
+}
+
+.bottleneck-summary-card.tone-success strong,
+.bottleneck-summary-card.tone-success small {
+  color: var(--color-success);
+}
+
+.bottleneck-summary-card.tone-danger strong,
+.bottleneck-summary-card.tone-danger small {
+  color: var(--color-danger);
+}
+
+.bottleneck-chart {
+  width: calc(100% - 36px);
+  margin: 18px;
+  box-shadow: none;
+}
+
+.bottleneck-change-grid {
+  display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.bottleneck-change-item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.bottleneck-change-item span,
+.bottleneck-change-item small {
+  color: var(--color-subtle);
+  font-size: 10px;
+}
+
+.bottleneck-change-item strong {
+  overflow: hidden;
+  color: var(--color-primary);
+  font-family: var(--font-data);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottleneck-change-item.tone-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.bottleneck-change-item.tone-success small {
+  color: var(--color-success);
+  font-weight: 800;
+}
+
+.bottleneck-change-item.tone-danger {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.bottleneck-change-item.tone-danger small {
+  color: var(--color-danger);
+  font-weight: 800;
+}
+
+.bottleneck-diagnostic {
+  margin: 0;
+  padding: 12px 18px;
+  border-top: 1px solid #fed7aa;
+  color: #9a3412;
+  background: #fff7ed;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.outcome-kpi-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   padding: 18px;
   border-bottom: 1px solid var(--color-outline);
 }
@@ -1685,6 +2237,10 @@ function round(value, digits = 0) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .bottleneck-change-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .outcome-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1711,6 +2267,8 @@ function round(value, digits = 0) {
   }
 
   .comparison-kpi-grid,
+  .bottleneck-summary-grid,
+  .bottleneck-change-grid,
   .progress-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1724,6 +2282,8 @@ function round(value, digits = 0) {
   .compact-form,
   .kpi-grid,
   .comparison-kpi-grid,
+  .bottleneck-summary-grid,
+  .bottleneck-change-grid,
   .outcome-kpi-grid,
   .source-stat-grid,
   .route-metrics,

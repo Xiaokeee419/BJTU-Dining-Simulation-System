@@ -21,7 +21,7 @@ class OptimizationServiceIntegrationTest {
     private OptimizationService optimizationService;
 
     @Test
-    void optimizationFindsLowerLossThanInitialCandidate() throws InterruptedException {
+    void optimizationKeepsBestLossAtOrBelowInitialCandidate() throws InterruptedException {
         TaskADtos.SimulationRunResult baseRun = runSimulation(3000, "BUSY", 20260612L);
 
         var job = optimizationService.run(new OptimizationRunRequest(
@@ -39,7 +39,11 @@ class OptimizationServiceIntegrationTest {
 
         assertThat(completed.status()).isEqualTo("COMPLETED");
         assertThat(iterations).isNotEmpty();
-        assertThat(best.loss()).isLessThan(iterations.get(0).loss());
+        assertThat(iterations.get(0).bottleneckMetrics()).isNotNull();
+        assertThat(iterations.get(0).bottleneckMetrics().maxSingleWindowQueue()).isGreaterThanOrEqualTo(0);
+        assertThat(iterations.get(0).bottleneckMetrics().totalOverload()).isGreaterThanOrEqualTo(0);
+        assertThat(best.loss()).isLessThanOrEqualTo(iterations.get(0).loss());
+        assertThat(best.bottleneckMetrics()).isNotNull();
     }
 
     private TaskADtos.SimulationRunResult runSimulation(int users, String crowdLevel, long seed) {

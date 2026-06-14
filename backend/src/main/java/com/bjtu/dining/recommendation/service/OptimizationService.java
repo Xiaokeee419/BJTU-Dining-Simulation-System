@@ -6,6 +6,7 @@ import com.bjtu.dining.recommendation.dto.DiversionComparisonRequest;
 import com.bjtu.dining.recommendation.dto.DiversionComparisonResult;
 import com.bjtu.dining.recommendation.dto.DiversionStrategyParameters;
 import com.bjtu.dining.recommendation.dto.OptimizationBestResult;
+import com.bjtu.dining.recommendation.dto.OptimizationBottleneckMetrics;
 import com.bjtu.dining.recommendation.dto.OptimizationIterationItem;
 import com.bjtu.dining.recommendation.dto.OptimizationJobResult;
 import com.bjtu.dining.recommendation.dto.OptimizationRunRequest;
@@ -32,6 +33,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class OptimizationService {
     private static final int MAX_STORED_JOBS = 80;
+    private static final int OVERLOAD_THRESHOLD = 10;
     private static final Logger log = LoggerFactory.getLogger(OptimizationService.class);
     private static final Set<String> VALID_CROWD_LEVELS = Set.of("IDLE", "NORMAL", "BUSY", "EXTREME");
 
@@ -52,8 +54,8 @@ public class OptimizationService {
     public OptimizationJobResult run(OptimizationRunRequest request) {
         simulationService.getRunResult(request.baseRunId());
         int totalIterations = request.iterationCount() == null ? 16 : request.iterationCount();
-        if (totalIterations < 1 || totalIterations > 60) {
-            throw new BadRequestException("iterationCount", "iterationCount must be between 1 and 60");
+        if (totalIterations < 1 || totalIterations > 200) {
+            throw new BadRequestException("iterationCount", "iterationCount must be between 1 and 200");
         }
         String targetCrowdLevel = normalizeCrowdLevel(request.targetCrowdLevel());
         DiversionStrategyParameters initial =
@@ -98,7 +100,8 @@ public class OptimizationService {
                 best.loss(),
                 best.compareRunId(),
                 best.parameters(),
-                best.metrics()
+                best.metrics(),
+                best.bottleneckMetrics()
         );
     }
 
@@ -156,6 +159,7 @@ public class OptimizationService {
                                 candidate.parameters(),
                                 currentParameters,
                                 candidate.metrics(),
+                                candidate.bottleneckMetrics(),
                                 candidate.suggestionCount()
                         ),
                         currentEvaluation,
@@ -193,6 +197,21 @@ public class OptimizationService {
         int suggestionCount = result.diversionResult() == null
                 ? 0
                 : result.diversionResult().suggestions().size();
+        List<Long> sourceWindowIds = result.diversionResult() == null
+                ? List.of()
+                : result.diversionResult().suggestions().stream()
+                        .map(item -> item.fromWindowId())
+                        .distinct()
+                        .toList();
+        TaskADtos.SimulationRunResult compareRun = result.compareRunId() == null
+                ? baseRun
+                : simulationService.getRunResult(result.compareRunId());
+        OptimizationBottleneckMetrics bottleneckMetrics = buildBottleneckMetrics(
+                compareRun,
+                result.minute(),
+                sourceWindowIds,
+                compare.unservedUserCount()
+        );
         LocalLossContext localContext = buildLocalLossContext(baseRun, result);
         double loss = calculateLoss(base, compare, localContext, suggestionCount);
         return new CandidateEvaluation(
@@ -200,7 +219,60 @@ public class OptimizationService {
                 loss,
                 result.compareRunId(),
                 compare,
+                bottleneckMetrics,
                 suggestionCount
+        );
+    }
+
+    private OptimizationBottleneckMetrics buildBottleneckMetrics(
+            TaskADtos.SimulationRunResult run,
+            int minute,
+            List<Long> sourceWindowIds,
+            int unservedUserCount
+    ) {
+        TaskADtos.SimulationTimePoint comparisonPoint = timePointAt(run, minute);
+        Integer sourceQueueTotal = null;
+        Double sourceAverageWait = null;
+        if (comparisonPoint != null && !sourceWindowIds.isEmpty()) {
+            Set<Long> sourceWindowIdSet = Set.copyOf(sourceWindowIds);
+            List<TaskADtos.QueueState> sourceWindows = comparisonPoint.restaurants().stream()
+                    .flatMap(restaurant -> restaurant.windows().stream())
+                    .filter(window -> sourceWindowIdSet.contains(window.windowId()))
+                    .toList();
+            if (!sourceWindows.isEmpty()) {
+                sourceQueueTotal = sourceWindows.stream()
+                        .mapToInt(TaskADtos.QueueState::queueLength)
+                        .sum();
+                sourceAverageWait = round(sourceWindows.stream()
+                        .mapToDouble(TaskADtos.QueueState::waitMinutes)
+                        .average()
+                        .orElse(0.0));
+            }
+        }
+
+        int maxSingleWindowQueue = 0;
+        int peakTotalQueue = 0;
+        int totalOverload = 0;
+        for (TaskADtos.SimulationTimePoint point : run.timePoints()) {
+            int pointTotalQueue = 0;
+            for (TaskADtos.RestaurantTimePoint restaurant : point.restaurants()) {
+                for (TaskADtos.QueueState window : restaurant.windows()) {
+                    int queueLength = window.queueLength();
+                    pointTotalQueue += queueLength;
+                    maxSingleWindowQueue = Math.max(maxSingleWindowQueue, queueLength);
+                    totalOverload += Math.max(queueLength - OVERLOAD_THRESHOLD, 0);
+                }
+            }
+            peakTotalQueue = Math.max(peakTotalQueue, pointTotalQueue);
+        }
+
+        return new OptimizationBottleneckMetrics(
+                sourceQueueTotal,
+                sourceAverageWait,
+                maxSingleWindowQueue,
+                peakTotalQueue,
+                totalOverload,
+                unservedUserCount
         );
     }
 
@@ -343,6 +415,7 @@ public class OptimizationService {
             double loss,
             Long compareRunId,
             EvaluationMetrics metrics,
+            OptimizationBottleneckMetrics bottleneckMetrics,
             int suggestionCount
     ) {
     }

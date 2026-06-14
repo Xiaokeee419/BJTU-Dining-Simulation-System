@@ -7,6 +7,7 @@ public record OptimizationBestResult(
         Double loss,
         Long compareRunId,
         DiversionStrategyParameters parameters,
-        EvaluationMetrics metrics
+        EvaluationMetrics metrics,
+        OptimizationBottleneckMetrics bottleneckMetrics
 ) {
 }

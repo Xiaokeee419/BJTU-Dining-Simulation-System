@@ -13,6 +13,7 @@ public record OptimizationIterationItem(
         DiversionStrategyParameters candidateParameters,
         DiversionStrategyParameters currentParameters,
         EvaluationMetrics metrics,
+        OptimizationBottleneckMetrics bottleneckMetrics,
         int suggestionCount
 ) {
 }

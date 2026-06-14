@@ -42,17 +42,17 @@ export function startOptimization(payload, config = {}) {
   return http.post('/optimizations/run', payload, config).then(unwrapResponse)
 }
 
-export function getOptimizationJob(taskId, config = {}) {
-  return http.get(`/optimizations/${taskId}`, config).then(unwrapResponse)
+export function getOptimizationJob(jobId, config = {}) {
+  return http.get(`/optimizations/${jobId}`, config).then(unwrapResponse)
 }
 
-export function getOptimizationIterations(taskId, config = {}) {
-  return http.get(`/optimizations/${taskId}/iterations`, config).then(unwrapResponse)
+export function getOptimizationIterations(jobId, config = {}) {
+  return http.get(`/optimizations/${jobId}/iterations`, config).then(unwrapResponse)
 }
 
-export async function getOptimizationBest(taskId, config = {}) {
+export async function getOptimizationBest(jobId, config = {}) {
   try {
-    return await http.get(`/optimizations/${taskId}/best`, config).then(unwrapResponse)
+    return await http.get(`/optimizations/${jobId}/best`, config).then(unwrapResponse)
   } catch (error) {
     if (error?.status === 404) {
       return null

@@ -49,6 +49,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
   const optimizationJob = ref(null)
   const optimizationIterations = ref([])
   const optimizationBest = ref(null)
+  const optimizationBestRun = ref(null)
   const lastRunMeta = ref(loadDashboardLastRunMeta())
 
   const loading = reactive({
@@ -275,6 +276,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     optimizationJob.value = null
     optimizationIterations.value = []
     optimizationBest.value = null
+    optimizationBestRun.value = null
     loading.optimization = true
     requestStatus.value = 'STARTING_OPTIMIZATION'
     const activeSession = sessionId
@@ -292,10 +294,14 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
         { signal: controller.signal },
       )
       if (activeSession !== sessionId) return null
-      optimizationJob.value = job
+      const optimizationId = resolveOptimizationJobId(job)
+      if (!optimizationId) {
+        throw new Error('优化任务启动成功，但响应中缺少 jobId')
+      }
+      optimizationJob.value = normalizeOptimizationJob(job)
       rememberResponse('optimization-start', job)
       requestStatus.value = 'OPTIMIZATION_RUNNING'
-      pollOptimization(job.taskId, activeSession, controller)
+      pollOptimization(optimizationId, activeSession, controller)
       return job
     } catch (error) {
       if (isCanceledRequest(error)) return null
@@ -307,23 +313,47 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     }
   }
 
-  async function pollOptimization(taskId, activeSession, controller) {
+  async function pollOptimization(jobId, activeSession, controller) {
     try {
       const [job, iterations, best] = await Promise.all([
-        getOptimizationJob(taskId, { signal: controller.signal }),
-        getOptimizationIterations(taskId, { signal: controller.signal }),
-        getOptimizationBest(taskId, { signal: controller.signal }),
+        getOptimizationJob(jobId, { signal: controller.signal }),
+        getOptimizationIterations(jobId, { signal: controller.signal }),
+        getOptimizationBest(jobId, { signal: controller.signal }),
       ])
+      const activeJobId = resolveOptimizationJobId(optimizationJob.value)
       if (
         activeSession !== sessionId
         || controllers.get('optimization') !== controller
-        || (optimizationJob.value?.taskId && optimizationJob.value.taskId !== taskId)
+        || (activeJobId && activeJobId !== jobId)
       ) {
         return
       }
-      optimizationJob.value = job
+      const normalizedBest = normalizeOptimizationBest(best)
+      let loadedBestRun = optimizationBestRun.value
+      if (
+        normalizedBest?.compareRunId
+        && Number(loadedBestRun?.runId) !== Number(normalizedBest.compareRunId)
+      ) {
+        try {
+          loadedBestRun = await getDashboardSimulation(
+            normalizedBest.compareRunId,
+            { signal: controller.signal },
+          )
+        } catch (error) {
+          if (isCanceledRequest(error)) return
+          loadedBestRun = null
+        }
+      }
+      if (
+        activeSession !== sessionId
+        || controllers.get('optimization') !== controller
+      ) {
+        return
+      }
+      optimizationJob.value = normalizeOptimizationJob(job)
       optimizationIterations.value = iterations || []
-      optimizationBest.value = best
+      optimizationBest.value = normalizedBest
+      optimizationBestRun.value = loadedBestRun
       rememberResponse('optimization-progress', {
         job,
         iterationCount: iterations?.length || 0,
@@ -339,7 +369,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
         return
       }
       pollTimer = window.setTimeout(
-        () => pollOptimization(taskId, activeSession, controller),
+        () => pollOptimization(jobId, activeSession, controller),
         900,
       )
     } catch (error) {
@@ -368,6 +398,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     optimizationJob.value = null
     optimizationIterations.value = []
     optimizationBest.value = null
+    optimizationBestRun.value = null
     lastError.value = null
     rawResponses.value = []
     lastChartUpdatedAt.value = null
@@ -508,6 +539,7 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     optimizationJob,
     optimizationIterations,
     optimizationBest,
+    optimizationBestRun,
     loading,
     requestStatus,
     lastError,
@@ -527,6 +559,34 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     stopOptimizationPolling,
   }
 })
+
+function resolveOptimizationJobId(job) {
+  return job?.jobId ?? job?.taskId ?? null
+}
+
+function normalizeOptimizationJob(job) {
+  if (!job) return job
+  const jobId = resolveOptimizationJobId(job)
+  if (!jobId) return job
+  return {
+    ...job,
+    jobId,
+    taskId: job.taskId ?? jobId,
+  }
+}
+
+function normalizeOptimizationBest(result) {
+  if (!result?.evaluation) return result
+  const evaluation = result.evaluation
+  const jobId = result.jobId ?? result.taskId ?? null
+  return {
+    ...evaluation,
+    jobId,
+    taskId: result.taskId ?? jobId,
+    parameters: evaluation.strategyParameters,
+    metrics: evaluation.compareMetrics,
+  }
+}
 
 function defaultStrategyParameters() {
   return {
