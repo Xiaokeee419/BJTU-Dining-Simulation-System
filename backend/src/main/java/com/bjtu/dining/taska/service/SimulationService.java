@@ -2,6 +2,9 @@ package com.bjtu.dining.taska.service;
 
 import com.bjtu.dining.common.BadRequestException;
 import com.bjtu.dining.common.ResourceNotFoundException;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePoint;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePreviewRequest;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurveResponse;
 import com.bjtu.dining.taska.model.TaskADtos.DiversionSuggestion;
 import com.bjtu.dining.taska.model.TaskADtos.EvaluationMetrics;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
@@ -152,6 +155,54 @@ public class SimulationService {
     public MetricsResponse metrics(long runId) {
         SimulationRunResult result = getRunResult(runId);
         return new MetricsResponse(runId, result.metrics());
+    }
+
+    public ArrivalCurveResponse previewArrivalCurve(ArrivalCurvePreviewRequest request) {
+        UserProfile profile = normalizeProfile(request == null ? null : request.profile());
+        SimulationScenario scenario = normalizeScenario(request == null ? null : request.scenario());
+        validate(profile, scenario);
+
+        int dinerCount = Math.max(1, scenario.virtualUserCount());
+        double pressure = CROWD_COUNT_FACTOR.get(scenario.crowdLevel())
+                * scenario.weatherFactor()
+                * scenario.eventFactor();
+        double[] weights = arrivalCurveGenerator.buildMinuteWeights(
+                scenario.mealPeriod(),
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure
+        );
+        List<Integer> sampledMinutes = arrivalCurveGenerator.generateArrivalMinutes(
+                scenario.mealPeriod(),
+                scenario.dayType(),
+                scenario.crowdLevel(),
+                scenario.durationMinutes(),
+                pressure,
+                dinerCount,
+                new Random(scenario.randomSeed())
+        );
+        Map<Integer, Integer> minuteCounts = new LinkedHashMap<>();
+        for (Integer minute : sampledMinutes) {
+            minuteCounts.merge(minute, 1, Integer::sum);
+        }
+
+        List<ArrivalCurvePoint> points = new ArrayList<>(scenario.durationMinutes() + 1);
+        for (int minute = 0; minute <= scenario.durationMinutes(); minute++) {
+            double weight = minute < weights.length ? weights[minute] : 0.0;
+            points.add(new ArrivalCurvePoint(
+                    minute,
+                    minuteCounts.getOrDefault(minute, 0),
+                    round(weight)
+            ));
+        }
+        return new ArrivalCurveResponse(
+                null,
+                scenario.mealPeriod(),
+                scenario.durationMinutes(),
+                dinerCount,
+                List.copyOf(points)
+        );
     }
 
     private SimulationRunResult simulateRun(

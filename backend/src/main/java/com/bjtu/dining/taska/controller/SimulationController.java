@@ -1,6 +1,8 @@
 package com.bjtu.dining.taska.controller;
 
 import com.bjtu.dining.common.ApiResponse;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurvePreviewRequest;
+import com.bjtu.dining.taska.model.SimulationAnalyticsDtos.ArrivalCurveResponse;
 import com.bjtu.dining.taska.model.TaskADtos.MetricsResponse;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunRequest;
 import com.bjtu.dining.taska.model.TaskADtos.SimulationRunResult;
@@ -33,6 +35,13 @@ public class SimulationController {
             @RequestBody SimulationRunWithDiversionRequest request
     ) {
         return ApiResponse.ok(simulationService.runSimulationWithDiversion(request));
+    }
+
+    @PostMapping("/arrival-curve-preview")
+    public ApiResponse<ArrivalCurveResponse> arrivalCurvePreview(
+            @RequestBody(required = false) ArrivalCurvePreviewRequest request
+    ) {
+        return ApiResponse.ok(simulationService.previewArrivalCurve(request));
     }
 
     @GetMapping("/{runId}")

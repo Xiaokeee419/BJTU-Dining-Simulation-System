@@ -350,8 +350,18 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       ) {
         return
       }
-      optimizationJob.value = normalizeOptimizationJob(job)
-      optimizationIterations.value = iterations || []
+      const normalizedIterations = iterations || []
+      const latestIteration = normalizedIterations.at(-1)
+      optimizationJob.value = normalizeOptimizationJob({
+        ...job,
+        currentTemperature: job.currentTemperature ?? latestIteration?.temperature,
+        currentLoss: job.currentLoss ?? latestIteration?.loss,
+        currentParameters:
+          job.currentParameters
+          ?? latestIteration?.currentParameters
+          ?? latestIteration?.strategyParameters,
+      })
+      optimizationIterations.value = normalizedIterations
       optimizationBest.value = normalizedBest
       optimizationBestRun.value = loadedBestRun
       rememberResponse('optimization-progress', {

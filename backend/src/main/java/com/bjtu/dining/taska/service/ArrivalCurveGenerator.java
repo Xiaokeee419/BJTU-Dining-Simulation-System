@@ -1,5 +1,7 @@
 package com.bjtu.dining.taska.service;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -63,6 +65,78 @@ public class ArrivalCurveGenerator {
         double baseBias = (baseArrivalMinute - profile.baseReferenceMinute()) * profile.baseInfluence();
         double arrival = peak.centerMinute() + dayShift + baseBias + rng.nextGaussian() * spread;
         return clamp((int) Math.round(arrival), 0, durationMinutes);
+    }
+
+    public List<Integer> generateArrivalMinutes(
+            String mealPeriod,
+            String dayType,
+            String crowdLevel,
+            int durationMinutes,
+            double pressure,
+            int dinerCount,
+            Random rng
+    ) {
+        double[] weights = buildMinuteWeights(
+                mealPeriod,
+                dayType,
+                crowdLevel,
+                durationMinutes,
+                pressure
+        );
+        double totalWeight = 0.0;
+        for (double weight : weights) {
+            totalWeight += weight;
+        }
+        if (totalWeight <= 0.0 || dinerCount <= 0) {
+            return List.of();
+        }
+
+        List<Integer> arrivalMinutes = new ArrayList<>(dinerCount);
+        for (int index = 0; index < dinerCount; index++) {
+            double threshold = rng.nextDouble() * totalWeight;
+            double cumulative = 0.0;
+            int selectedMinute = weights.length - 1;
+            for (int minute = 0; minute < weights.length; minute++) {
+                cumulative += weights[minute];
+                if (threshold <= cumulative) {
+                    selectedMinute = minute;
+                    break;
+                }
+            }
+            arrivalMinutes.add(selectedMinute);
+        }
+        arrivalMinutes.sort(Comparator.naturalOrder());
+        return List.copyOf(arrivalMinutes);
+    }
+
+    public double[] buildMinuteWeights(
+            String mealPeriod,
+            String dayType,
+            String crowdLevel,
+            int durationMinutes,
+            double pressure
+    ) {
+        CurveProfile profile = CURVES.getOrDefault(mealPeriod, CURVES.get("LUNCH"));
+        int horizon = Math.max(0, durationMinutes);
+        double[] weights = new double[horizon + 1];
+        double dayShift = "WEEKEND".equals(dayType) ? 8.0 : 0.0;
+        double daySpread = "WEEKEND".equals(dayType) ? 1.22 : 1.0;
+        double pressureFactor = Math.sqrt(Math.max(0.55, pressure));
+        double spreadFactor = CROWD_SPREAD_FACTOR.getOrDefault(crowdLevel, 1.0)
+                * daySpread
+                / pressureFactor;
+
+        for (int minute = 0; minute <= horizon; minute++) {
+            double minuteWeight = 0.0;
+            for (Peak peak : profile.peaks()) {
+                double center = peak.centerMinute() + dayShift;
+                double spread = Math.max(1.0, peak.standardDeviation() * spreadFactor);
+                double distance = minute - center;
+                minuteWeight += peak.weight() * Math.exp(-0.5 * distance * distance / (spread * spread));
+            }
+            weights[minute] = minuteWeight;
+        }
+        return weights;
     }
 
     private Peak choosePeak(List<Peak> peaks, double ticket) {

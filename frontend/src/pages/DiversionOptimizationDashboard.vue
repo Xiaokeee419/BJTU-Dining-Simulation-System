@@ -411,7 +411,8 @@
             subtitle="同步观察最大单窗口排队、总过载程度和来源窗口总排队是否回落。"
             :option="optimizationMetricOption"
             :loading="loading.optimization && !optimizationIterations.length"
-            :empty="!optimizationIterations.length"
+            :empty="!optimizationBottleneckSeriesReady"
+            empty-text="当前后端未返回迭代瓶颈指标，请重启后端后重新运行模拟退火"
           />
         </div>
 
@@ -867,6 +868,17 @@ const initialOptimizationLoss = computed(() => {
   )
   return isFiniteMetric(firstIteration?.loss) ? Number(firstIteration.loss) : null
 })
+
+const optimizationBottleneckSeriesReady = computed(() =>
+  optimizationIterations.value.some((item) => {
+    const metrics = item?.bottleneckMetrics
+    return (
+      isFiniteMetric(metrics?.maxSingleWindowQueue)
+      || isFiniteMetric(metrics?.totalOverload)
+      || isFiniteMetric(metrics?.sourceWindowQueueTotal)
+    )
+  }),
+)
 
 const optimizationOutcomeCards = computed(() => {
   const baseline = baselineBottleneckMetrics.value
