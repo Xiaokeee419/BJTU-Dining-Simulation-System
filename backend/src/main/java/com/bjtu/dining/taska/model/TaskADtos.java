@@ -47,6 +47,7 @@ public final class TaskADtos {
             long windowId,
             long restaurantId,
             String name,
+            String recommendedMealPeriod,
             double serviceRatePerMinute,
             String status
     ) {

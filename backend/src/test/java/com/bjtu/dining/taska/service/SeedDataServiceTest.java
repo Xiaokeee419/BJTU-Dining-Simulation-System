@@ -34,4 +34,17 @@ class SeedDataServiceTest {
         assertThatThrownBy(() -> seedDataService.flowCurve("LUNCH", 0))
                 .isInstanceOf(BadRequestException.class);
     }
+
+    @Test
+    void windowParametersExposeMealPeriodForScenarioAvailability() {
+        var windows = seedDataService.windowParameters(null);
+
+        assertThat(windows).isNotEmpty();
+        assertThat(windows)
+                .allMatch(window -> window.recommendedMealPeriod() != null
+                        && !window.recommendedMealPeriod().isBlank());
+        assertThat(windows).anyMatch(window -> "BREAKFAST".equals(window.recommendedMealPeriod()));
+        assertThat(windows).anyMatch(window -> "LUNCH".equals(window.recommendedMealPeriod()));
+        assertThat(windows).anyMatch(window -> "DINNER".equals(window.recommendedMealPeriod()));
+    }
 }

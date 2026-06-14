@@ -1,9 +1,11 @@
 <template>
   <aside class="app-sidebar">
     <RouterLink to="/simulation" class="sidebar-brand" aria-label="返回仿真运行">
-      <span class="sidebar-brand-mark" aria-hidden="true">
-        <i v-for="index in 4" :key="index"></i>
-      </span>
+      <img
+        class="sidebar-brand-mark"
+        src="/bjtu-emblem.png"
+        alt="北京交通大学校徽"
+      />
       <span class="sidebar-brand-copy">
         <strong>BJTU Simulation</strong>
         <small>食堂排队仿真与分流优化</small>
@@ -70,22 +72,12 @@ const navItems = [
 }
 
 .sidebar-brand-mark {
-  display: grid;
   flex: 0 0 auto;
-  grid-template-columns: repeat(2, 7px);
-  grid-template-rows: repeat(2, 7px);
-  gap: 3px;
-  place-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 6px;
-  background: var(--color-primary);
-  box-shadow: 0 8px 18px rgb(0 24 66 / 16%);
-}
-
-.sidebar-brand-mark i {
-  border: 1px solid #fff;
-  border-radius: 1px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 10px rgb(0 45 110 / 14%));
 }
 
 .sidebar-brand-copy {
@@ -238,8 +230,8 @@ const navItems = [
   }
 
   .sidebar-brand-mark {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
   }
 
   .sidebar-nav {

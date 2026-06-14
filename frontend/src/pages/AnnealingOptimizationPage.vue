@@ -125,7 +125,7 @@
         />
         <DashboardChart
           title="迭代中的关键瓶颈指标"
-          subtitle="与规则分流采用相同的五项评价口径，峰值总排队使用右侧坐标轴。"
+          subtitle="仅观察来源窗口排队、来源窗口等待和总过载程度；等待时间使用右侧坐标轴。"
           :option="optimizationMetricOption"
           :loading="loading.optimization && !optimizationIterations.length"
           :empty="!optimizationBottleneckSeriesReady"
@@ -161,6 +161,37 @@
             :tone="card.tone"
           />
         </div>
+
+        <section class="flow-grid flow-grid-2 stage-chart-grid">
+          <DashboardChart
+            title="Baseline / 规则分流 / 退火最优三阶段对比"
+            subtitle="展示从基础仿真到规则分流，再到模拟退火优化后，三个核心瓶颈指标的连续变化；各指标保留自身原始单位。"
+            :option="threeStageRawOption"
+            :empty="!compareRun"
+            empty-text="请先完成规则分流验证"
+            :height="330"
+          >
+            <template #extra>
+              <span v-if="!optimizationBest" class="flow-status-chip">
+                请先完成模拟退火优化
+              </span>
+            </template>
+          </DashboardChart>
+          <DashboardChart
+            title="三阶段核心改善率对比"
+            subtitle="分别比较规则分流和退火最优相对 Baseline 的改善率，正值表示拥堵下降。"
+            :option="threeStageImprovementOption"
+            :empty="!compareRun"
+            empty-text="请先完成规则分流验证"
+            :height="330"
+          >
+            <template #extra>
+              <span v-if="!optimizationBest" class="flow-status-chip">
+                请先完成模拟退火优化
+              </span>
+            </template>
+          </DashboardChart>
+        </section>
 
         <div class="flow-subsection">
           <h3>退火相对规则分流的进一步优化</h3>
@@ -228,16 +259,6 @@
                 width="100"
               />
               <el-table-column
-                prop="bottleneckMetrics.maxSingleWindowQueue"
-                label="最大单窗"
-                width="100"
-              />
-              <el-table-column
-                prop="bottleneckMetrics.peakTotalQueue"
-                label="峰值总排队"
-                width="112"
-              />
-              <el-table-column
                 prop="bottleneckMetrics.totalOverload"
                 label="总过载"
                 width="90"
@@ -267,6 +288,7 @@ import {
   buildThreeStageRow,
   finiteMetricOrNull,
   formatImprovementText,
+  formatMetricValue,
   formatNumber,
   formatPercentChange,
   improvementPercent,
@@ -331,14 +353,18 @@ const optimizedMetrics = computed(() => {
   }
 })
 
-const initialOptimizationLoss = computed(() => {
-  const firstIteration =
-    optimizationIterations.value.find((item) => Number(item.iteration) === 1) ??
-    optimizationIterations.value[0]
-  return finiteMetricOrNull(firstIteration?.loss)
-})
 const bestLoss = computed(
   () => optimizationBest.value?.loss ?? optimizationJob.value?.bestLoss,
+)
+const strategyLoss = computed(() =>
+  firstFiniteMetric(
+    comparison.value?.loss,
+    comparison.value?.compareLoss,
+    comparison.value?.strategyLoss,
+    comparison.value?.ruleLoss,
+    comparison.value?.compareMetrics?.loss,
+    compareRun.value?.metrics?.loss,
+  ),
 )
 
 const flowStatus = computed(() => {
@@ -426,15 +452,13 @@ const optimizationBottleneckSeriesReady = computed(() =>
     [
       item?.bottleneckMetrics?.sourceWindowQueueTotal,
       item?.bottleneckMetrics?.sourceWindowAverageWait,
-      item?.bottleneckMetrics?.maxSingleWindowQueue,
-      item?.bottleneckMetrics?.peakTotalQueue,
       item?.bottleneckMetrics?.totalOverload,
     ].some(isFiniteMetric),
   ),
 )
 
 const optimizationMetricOption = computed(() => ({
-  color: ['#0160a8', '#7c3aed', '#f97316', '#64748b', '#16a34a'],
+  color: ['#0160a8', '#7c3aed', '#16a34a'],
   tooltip: { trigger: 'axis' },
   legend: { top: 4 },
   grid: { left: 58, right: 64, top: 58, bottom: 42 },
@@ -443,8 +467,8 @@ const optimizationMetricOption = computed(() => ({
     data: optimizationIterations.value.map((item) => item.iteration),
   },
   yAxis: [
-    { type: 'value', name: '排队 / 等待 / 过载', min: 0 },
-    { type: 'value', name: '峰值总排队', min: 0, splitLine: { show: false } },
+    { type: 'value', name: '排队 / 过载', min: 0 },
+    { type: 'value', name: '等待（分钟）', min: 0, splitLine: { show: false } },
   ],
   series: [
     {
@@ -457,23 +481,9 @@ const optimizationMetricOption = computed(() => ({
     {
       name: '来源窗口平均等待',
       type: 'line',
-      data: optimizationIterations.value.map((item) =>
-        finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowAverageWait),
-      ),
-    },
-    {
-      name: '最大单窗口排队',
-      type: 'line',
-      data: optimizationIterations.value.map((item) =>
-        finiteMetricOrNull(item.bottleneckMetrics?.maxSingleWindowQueue),
-      ),
-    },
-    {
-      name: '峰值总排队人数',
-      type: 'line',
       yAxisIndex: 1,
       data: optimizationIterations.value.map((item) =>
-        finiteMetricOrNull(item.bottleneckMetrics?.peakTotalQueue),
+        finiteMetricOrNull(item.bottleneckMetrics?.sourceWindowAverageWait),
       ),
     },
     {
@@ -503,8 +513,8 @@ const outcomeCards = computed(() => {
     { label: 'Best Loss', value: formatNumber(bestLoss.value, 2), tone: 'success' },
     {
       label: 'Loss 下降率',
-      value: formatPercentChange(improvementPercent(initialOptimizationLoss.value, bestLoss.value)),
-      tone: lowerBetterTone(metricDelta(initialOptimizationLoss.value, bestLoss.value)),
+      value: formatPercentChange(improvementPercent(strategyLoss.value, bestLoss.value)),
+      tone: lowerBetterTone(metricDelta(strategyLoss.value, bestLoss.value)),
     },
     {
       label: '来源窗口排队相对规则再下降',
@@ -557,67 +567,167 @@ const furtherImprovementCards = computed(() => [
     0,
     '',
   ),
-  buildFurtherImprovementCard('Loss', initialOptimizationLoss.value, bestLoss.value, 2, ''),
-  buildFurtherImprovementCard(
-    '极端过载程度',
-    strategyMetrics.value.extremeOverload,
-    optimizedMetrics.value.extremeOverload,
-    0,
-    '',
-  ),
+  buildFurtherImprovementCard('Loss', strategyLoss.value, bestLoss.value, 2, ''),
+])
+
+const stageMetricRows = computed(() => [
+  {
+    key: 'sourceQueue',
+    label: '来源窗口总排队',
+    baseline: baselineMetrics.value.sourceQueue,
+    strategy: strategyMetrics.value.sourceQueue,
+    optimized: optimizedMetrics.value.sourceQueue,
+    digits: 0,
+    unit: '人',
+  },
+  {
+    key: 'sourceWait',
+    label: '来源窗口平均等待',
+    baseline: baselineMetrics.value.sourceWait,
+    strategy: strategyMetrics.value.sourceWait,
+    optimized: optimizedMetrics.value.sourceWait,
+    digits: 1,
+    unit: '分钟',
+  },
+  {
+    key: 'totalOverload',
+    label: '总过载程度',
+    baseline: baselineMetrics.value.totalOverload,
+    strategy: strategyMetrics.value.totalOverload,
+    optimized: optimizedMetrics.value.totalOverload,
+    digits: 0,
+    unit: '',
+  },
 ])
 
 const threeStageRows = computed(() => [
-  buildThreeStageRow(
-    '来源窗口总排队',
-    baselineMetrics.value.sourceQueue,
-    strategyMetrics.value.sourceQueue,
-    optimizedMetrics.value.sourceQueue,
-    0,
-    '人',
+  ...stageMetricRows.value.map((row) =>
+    buildThreeStageRow(
+      row.label,
+      row.baseline,
+      row.strategy,
+      row.optimized,
+      row.digits,
+      row.unit,
+    ),
   ),
-  buildThreeStageRow(
-    '来源窗口平均等待',
-    baselineMetrics.value.sourceWait,
-    strategyMetrics.value.sourceWait,
-    optimizedMetrics.value.sourceWait,
-    1,
-    '分钟',
-  ),
-  buildThreeStageRow(
-    '最大单窗口排队',
-    baselineMetrics.value.maxWindowQueue,
-    strategyMetrics.value.maxWindowQueue,
-    optimizedMetrics.value.maxWindowQueue,
-    0,
-    '人',
-  ),
-  buildThreeStageRow(
-    '峰值总排队人数',
-    baselineMetrics.value.peakTotalQueue,
-    strategyMetrics.value.peakTotalQueue,
-    optimizedMetrics.value.peakTotalQueue,
-    0,
-    '人',
-  ),
-  buildThreeStageRow(
-    '总过载程度',
-    baselineMetrics.value.totalOverload,
-    strategyMetrics.value.totalOverload,
-    optimizedMetrics.value.totalOverload,
-    0,
-    '',
-  ),
-  buildThreeStageRow(
-    '未服务人数',
-    baselineMetrics.value.unservedUsers,
-    strategyMetrics.value.unservedUsers,
-    optimizedMetrics.value.unservedUsers,
-    0,
-    '人',
-  ),
-  buildThreeStageRow('Loss', null, initialOptimizationLoss.value, bestLoss.value, 2, ''),
+  {
+    label: 'Loss',
+    baseline: '--',
+    strategy: formatMetricValue(strategyLoss.value, 2, ''),
+    optimized: formatMetricValue(bestLoss.value, 2, ''),
+    vsBaseline: '--',
+    vsStrategy: formatLossImprovement(strategyLoss.value, bestLoss.value),
+  },
 ])
+
+const threeStageRawOption = computed(() => ({
+  color: ['#94a3b8', '#0160a8', '#16a34a'],
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: (params) => {
+      const row = stageMetricRows.value[Number(params?.[0]?.dataIndex ?? -1)]
+      if (!row) return ''
+      return [
+        row.label,
+        `Baseline：${formatMetricValue(row.baseline, row.digits, row.unit)}`,
+        `规则分流：${formatMetricValue(row.strategy, row.digits, row.unit)}`,
+        `退火最优：${formatMetricValue(row.optimized, row.digits, row.unit)}`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 4, data: ['Baseline', '规则分流', '退火最优'] },
+  grid: { left: 52, right: 28, top: 48, bottom: 58 },
+  xAxis: {
+    type: 'category',
+    data: stageMetricRows.value.map((row) => row.label),
+    axisLabel: { interval: 0 },
+  },
+  yAxis: {
+    type: 'value',
+    name: '原始值',
+    min: 0,
+    splitLine: { lineStyle: { color: '#e8edf4' } },
+  },
+  series: [
+    {
+      name: 'Baseline',
+      type: 'bar',
+      barMaxWidth: 34,
+      data: stageMetricRows.value.map((row) => finiteMetricOrNull(row.baseline)),
+      itemStyle: { color: '#94a3b8', borderRadius: [6, 6, 0, 0] },
+    },
+    {
+      name: '规则分流',
+      type: 'bar',
+      barMaxWidth: 34,
+      data: stageMetricRows.value.map((row) => finiteMetricOrNull(row.strategy)),
+      itemStyle: { color: '#0160a8', borderRadius: [6, 6, 0, 0] },
+    },
+    {
+      name: '退火最优',
+      type: 'bar',
+      barMaxWidth: 34,
+      data: stageMetricRows.value.map((row) => finiteMetricOrNull(row.optimized)),
+      itemStyle: { color: '#16a34a', borderRadius: [6, 6, 0, 0] },
+    },
+  ],
+}))
+
+const threeStageImprovementOption = computed(() => ({
+  color: ['#0160a8', '#16a34a'],
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: (params) => {
+      const row = stageMetricRows.value[Number(params?.[0]?.dataIndex ?? -1)]
+      if (!row) return ''
+      const strategyRate = improvementPercent(row.baseline, row.strategy)
+      const optimizedRate = improvementPercent(row.baseline, row.optimized)
+      const relativeRuleRate = improvementPercent(row.strategy, row.optimized)
+      return [
+        row.label,
+        `规则分流相对 Baseline：${formatRateTooltip(strategyRate)}`,
+        `退火最优相对 Baseline：${formatRateTooltip(optimizedRate)}`,
+        `相对规则分流再提升：${formatRateTooltip(relativeRuleRate)}`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 4, data: ['规则分流相对 Baseline', '退火最优相对 Baseline'] },
+  grid: { left: 52, right: 28, top: 48, bottom: 62 },
+  xAxis: {
+    type: 'category',
+    data: stageMetricRows.value.map((row) => `${row.label}下降率`),
+    axisLabel: { interval: 0, rotate: 12 },
+  },
+  yAxis: {
+    type: 'value',
+    name: '改善率（%）',
+    axisLabel: { formatter: '{value}%' },
+    splitLine: { lineStyle: { color: '#e8edf4' } },
+  },
+  series: [
+    {
+      name: '规则分流相对 Baseline',
+      type: 'bar',
+      barMaxWidth: 38,
+      data: stageMetricRows.value.map((row) =>
+        finiteMetricOrNull(improvementPercent(row.baseline, row.strategy)),
+      ),
+      itemStyle: { color: '#0160a8', borderRadius: [6, 6, 0, 0] },
+    },
+    {
+      name: '退火最优相对 Baseline',
+      type: 'bar',
+      barMaxWidth: 38,
+      data: stageMetricRows.value.map((row) =>
+        finiteMetricOrNull(improvementPercent(row.baseline, row.optimized)),
+      ),
+      itemStyle: { color: '#16a34a', borderRadius: [6, 6, 0, 0] },
+    },
+  ],
+}))
 
 onMounted(async () => {
   try {
@@ -643,6 +753,25 @@ async function handleOptimization() {
 function stopPolling() {
   store.stopOptimizationPolling(true)
   ElMessage.info('已停止前端轮询')
+}
+
+function firstFiniteMetric(...values) {
+  return values.find(isFiniteMetric) ?? null
+}
+
+function formatLossImprovement(before, after) {
+  if (!isFiniteMetric(before) || !isFiniteMetric(after)) return '--'
+  const change = formatImprovementText(before, after, 2, '')
+  const rate = formatPercentChange(improvementPercent(before, after))
+  return `${change}，${rate}`
+}
+
+function formatRateTooltip(value) {
+  if (!isFiniteMetric(value)) return '--'
+  return `${Number(value) >= 0 ? '下降' : '上升'} ${formatNumber(
+    Math.abs(Number(value)),
+    1,
+  )}%`
 }
 </script>
 

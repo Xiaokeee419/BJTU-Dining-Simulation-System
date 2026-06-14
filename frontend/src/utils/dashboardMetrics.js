@@ -167,6 +167,7 @@ export function buildBottleneckMetrics(run, minute, sourceWindowIds = []) {
     targetOverload: null,
     loadImbalance,
     unservedUsers: finiteMetricOrNull(run?.metrics?.unservedUserCount),
+    loss: finiteMetricOrNull(run?.metrics?.loss),
   }
 }
 
@@ -185,6 +186,7 @@ export function normalizeOptimizationMetrics(metrics, fallbackMetrics) {
     unservedUsers: finiteMetricOrNull(
       metrics?.unservedUserCount ?? fallbackMetrics?.unservedUserCount,
     ),
+    loss: finiteMetricOrNull(metrics?.loss ?? fallbackMetrics?.loss),
   }
 }
 
@@ -250,6 +252,35 @@ export function buildFiveMetricRows(baseline, compare) {
       compare.peakTotalQueue,
       0,
       '人',
+    ),
+    buildBottleneckRow(
+      'totalOverload',
+      '总过载程度',
+      baseline.totalOverload,
+      compare.totalOverload,
+      0,
+      '',
+    ),
+  ]
+}
+
+export function buildCoreBottleneckRows(baseline, compare) {
+  return [
+    buildBottleneckRow(
+      'sourceQueue',
+      '来源窗口总排队',
+      baseline.sourceQueue,
+      compare.sourceQueue,
+      0,
+      '人',
+    ),
+    buildBottleneckRow(
+      'sourceWait',
+      '来源窗口平均等待',
+      baseline.sourceWait,
+      compare.sourceWait,
+      1,
+      '分钟',
     ),
     buildBottleneckRow(
       'totalOverload',

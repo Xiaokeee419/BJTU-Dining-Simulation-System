@@ -2,7 +2,7 @@
   <header class="navbar">
     <div class="navbar-shell">
       <RouterLink to="/simulation" class="brand">
-        <div class="brand-logo">BJ</div>
+        <img class="brand-logo" src="/bjtu-emblem.png" alt="北京交通大学校徽" />
         <div class="brand-copy">
           <strong>BJTU Dining Simulation System</strong>
           <span>食堂仿真、规则分流与模拟退火优化</span>
@@ -66,16 +66,11 @@ const navItems = [
 }
 
 .brand-logo {
-  display: grid;
-  place-items: center;
   width: 44px;
   height: 44px;
-  border: 2px solid #2563eb;
   border-radius: 50%;
-  color: #2563eb;
-  background: linear-gradient(180deg, #fff 0%, #edf4ff 100%);
-  font-size: 12px;
-  font-weight: 900;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 10px rgb(0 45 110 / 14%));
 }
 
 .brand-copy {

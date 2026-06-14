@@ -96,7 +96,7 @@
               <MetricBlock label="人群记录" :value="dataOverview?.studentCount" unit="条" />
               <MetricBlock label="餐厅" :value="dataOverview?.restaurantCount" unit="个" />
               <MetricBlock label="窗口" :value="dataOverview?.windowCount" unit="个" />
-              <MetricBlock label="开放窗口" :value="dataOverview?.openWindowCount" unit="个" />
+              <MetricBlock label="当前时段开放窗口" :value="scenarioOpenWindowCount" unit="个" />
             </div>
             <dl class="source-details">
               <div>
@@ -106,6 +106,10 @@
               <div>
                 <dt>支持人群</dt>
                 <dd>{{ dataOverview?.userTypes?.join(' / ') || '--' }}</dd>
+              </div>
+              <div>
+                <dt>窗口开放规则</dt>
+                <dd>{{ scenarioWindowRuleLabel }}</dd>
               </div>
             </dl>
           </section>
@@ -538,6 +542,8 @@ const {
   requestStatus,
   lastError,
   peakPoint,
+  scenarioOpenWindowCount,
+  scenarioWindowRuleLabel,
 } = storeToRefs(store)
 
 const SectionHeading = defineComponent({

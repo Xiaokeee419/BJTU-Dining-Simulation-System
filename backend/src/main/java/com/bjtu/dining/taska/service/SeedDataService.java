@@ -110,6 +110,7 @@ public class SeedDataService {
                         item.windowId(),
                         item.restaurantId(),
                         item.name(),
+                        item.recommendedMealPeriod(),
                         item.serviceRatePerMinute(),
                         item.status()
                 ))

@@ -74,6 +74,22 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     if (form.crowdLevel === 'IDLE') return 'IDLE'
     return 'NORMAL'
   })
+  const scenarioOpenWindowCount = computed(() => {
+    const hasMealPeriodMetadata = windows.value.some(
+      (window) => window?.recommendedMealPeriod,
+    )
+    if (!hasMealPeriodMetadata) {
+      return dataOverview.value?.openWindowCount ?? null
+    }
+    return windows.value.filter((window) =>
+      isWindowAvailableForMealPeriod(window, form.mealPeriod),
+    ).length
+  })
+  const scenarioWindowRuleLabel = computed(() =>
+    form.mealPeriod === 'BREAKFAST'
+      ? '早餐仅开放早餐档口，午餐和晚餐窗口关闭'
+      : '午餐和晚餐共用非早餐窗口，早餐档口关闭',
+  )
   const peakPoint = computed(() => resolvePeakTimePoint(currentRun.value))
   const staleDataRisk = computed(() => {
     if (!currentRun.value) return false
@@ -159,7 +175,6 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       lastRunMeta.value = rememberDashboardRun(run)
       rememberResponse('simulation-run', run)
       touchCharts()
-      await generateDiversion(activeSession)
       requestStatus.value = 'SIMULATION_COMPLETED'
       return run
     } catch (error) {
@@ -212,12 +227,6 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
       currentRun.value = run
       requestStatus.value = 'SIMULATION_COMPLETED'
       touchCharts()
-
-      try {
-        await generateDiversion()
-      } catch {
-        // Keep restored simulation data even if diversion suggestions fail.
-      }
 
       return run
     } catch {
@@ -561,6 +570,8 @@ export const useDashboardStore = defineStore('diversion-dashboard', () => {
     lastChartUpdatedAt,
     initialized,
     targetCrowdLevel,
+    scenarioOpenWindowCount,
+    scenarioWindowRuleLabel,
     peakPoint,
     staleDataRisk,
     lastRunMeta,
@@ -619,6 +630,26 @@ function defaultStrategyParameters() {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
+}
+
+function isWindowAvailableForMealPeriod(window, mealPeriod) {
+  if (
+    window?.status === 'CLOSED' ||
+    window?.open === false ||
+    window?.isOpen === false
+  ) {
+    return false
+  }
+  const recommendedMealPeriod = String(
+    window?.recommendedMealPeriod || '',
+  ).toUpperCase()
+  if (mealPeriod === 'BREAKFAST') {
+    return recommendedMealPeriod === 'BREAKFAST'
+  }
+  if (mealPeriod === 'LUNCH' || mealPeriod === 'DINNER') {
+    return recommendedMealPeriod !== 'BREAKFAST'
+  }
+  return false
 }
 
 function buildDataOverview(options, studentPool) {

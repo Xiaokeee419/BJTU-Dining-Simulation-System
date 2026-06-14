@@ -106,7 +106,12 @@
           <MetricCard label="人群记录" :value="dataOverview?.studentCount" unit="条" />
           <MetricCard label="餐厅" :value="dataOverview?.restaurantCount" unit="个" />
           <MetricCard label="窗口" :value="dataOverview?.windowCount" unit="个" />
-          <MetricCard label="开放窗口" :value="dataOverview?.openWindowCount" unit="个" />
+          <MetricCard
+            label="当前时段开放窗口"
+            :value="scenarioOpenWindowCount"
+            unit="个"
+            :detail="scenarioWindowRuleLabel"
+          />
         </div>
         <div class="flow-data-note">
           <span>到达模型</span>
@@ -186,6 +191,8 @@ const {
   currentRun,
   loading,
   requestStatus,
+  scenarioOpenWindowCount,
+  scenarioWindowRuleLabel,
   peakPoint,
 } = storeToRefs(store)
 

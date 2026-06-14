@@ -44,7 +44,7 @@
         </div>
       </section>
 
-      <section class="flow-panel">
+      <section v-if="diversionResult" class="flow-panel">
         <header class="flow-panel-heading">
           <div>
             <h2>高峰时刻分流建议</h2>
@@ -112,12 +112,23 @@
         </el-collapse>
       </section>
 
-      <section class="flow-panel">
+      <section v-else class="flow-panel diversion-pending-panel">
+        <el-empty
+          :image-size="72"
+          description="尚未生成规则分流建议。点击“生成规则分流建议”后，系统将基于高峰快照计算可执行的分流路径。"
+        >
+          <el-button type="primary" :loading="loading.diversion" @click="handleDiversion">
+            生成规则分流建议
+          </el-button>
+        </el-empty>
+      </section>
+
+      <section v-if="diversionResult" class="flow-panel">
         <header class="flow-panel-heading">
           <div>
             <h2>规则分流前后瓶颈缓解对比</h2>
             <p>
-              规则分流主要用于缓解被选中来源窗口的局部拥堵，因此重点观察来源排队、来源等待和总过载程度。
+              规则分流主要用于缓解被选中来源窗口的局部拥堵，因此本页重点观察来源窗口排队、来源窗口等待和总过载程度，而不再把全局极值指标作为核心展示。
             </p>
           </div>
           <span class="flow-status-chip">
@@ -125,34 +136,28 @@
           </span>
         </header>
 
-        <div class="flow-metric-grid flow-metric-grid-4">
-          <MetricCard label="建议分流人数" :value="suggestedDiversionCount" unit="人" />
-          <MetricCard label="预计接受人数" :value="estimatedAcceptedCount" unit="人" />
-          <MetricCard
-            label="来源窗口排队变化"
-            :value="transitionLabel(sourceQueueRow)"
-            :detail="sourceQueueRow?.changeLabel"
-            :tone="sourceQueueRow?.tone"
+        <section class="flow-grid flow-grid-2">
+          <DashboardChart
+            title="Baseline 与规则分流原始值对比"
+            subtitle="对比同一评价口径下的原始值；各组柱只用于同一指标前后比较，不把不同单位解释为同一量纲。"
+            :option="rawValueComparisonOption"
+            :loading="loading.comparison"
+            :empty="!compareRun"
+            empty-text="验证规则分流后显示 Baseline 与规则分流原始值"
+            :height="320"
           />
-          <MetricCard
-            label="总过载程度变化"
-            :value="transitionLabel(overloadRow)"
-            :detail="overloadRow?.percentLabel"
-            :tone="overloadRow?.tone"
+          <DashboardChart
+            title="核心瓶颈指标改善率"
+            subtitle="统一使用 (Baseline - Compare) / Baseline × 100%，负值表示分流后指标上升。"
+            :option="improvementRateOption"
+            :loading="loading.comparison"
+            :empty="!compareRun"
+            empty-text="验证规则分流后显示三个核心指标的改善率"
+            :height="320"
           />
-        </div>
+        </section>
 
-        <DashboardChart
-          title="核心瓶颈指标改善率"
-          subtitle="统一使用 (Baseline - Compare) / Baseline × 100%，正值表示拥堵得到缓解。"
-          :option="improvementRateOption"
-          :loading="loading.comparison"
-          :empty="!compareRun"
-          empty-text="验证规则分流后显示来源排队、来源等待和总过载程度的改善率"
-          :height="310"
-        />
-
-        <div class="comparison-card-grid">
+        <div class="comparison-card-grid comparison-card-grid-3">
           <article
             v-for="row in bottleneckRows"
             :key="row.key"
@@ -185,7 +190,7 @@ import MetricCard from '../components/dashboard/MetricCard.vue'
 import { useDashboardStore } from '../stores/dashboardStore'
 import {
   buildBottleneckMetrics,
-  buildFiveMetricRows,
+  buildCoreBottleneckRows,
   findWindow,
   formatNumber,
   resolveSourceWindowIds,
@@ -222,13 +227,7 @@ const compareMetrics = computed(() =>
   buildBottleneckMetrics(compareRun.value, comparisonMinute.value, sourceWindowIds.value),
 )
 const bottleneckRows = computed(() =>
-  buildFiveMetricRows(baselineMetrics.value, compareMetrics.value),
-)
-const sourceQueueRow = computed(() =>
-  bottleneckRows.value.find((row) => row.key === 'sourceQueue'),
-)
-const overloadRow = computed(() =>
-  bottleneckRows.value.find((row) => row.key === 'totalOverload'),
+  buildCoreBottleneckRows(baselineMetrics.value, compareMetrics.value),
 )
 
 const flowStatus = computed(() => {
@@ -280,11 +279,55 @@ const suggestionRows = computed(() =>
 const topSuggestions = computed(() => suggestionRows.value.slice(0, 3))
 const remainingSuggestions = computed(() => suggestionRows.value.slice(3))
 
-const primaryRows = computed(() =>
-  ['sourceQueue', 'sourceWait', 'totalOverload']
-    .map((key) => bottleneckRows.value.find((row) => row.key === key))
-    .filter(Boolean),
-)
+const primaryRows = computed(() => bottleneckRows.value)
+
+const rawValueComparisonOption = computed(() => ({
+  color: ['#94a3b8', '#0160a8'],
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: (params) => {
+      const row = primaryRows.value[Number(params?.[0]?.dataIndex ?? -1)]
+      if (!row) return ''
+      return [
+        row.label,
+        `Baseline：${row.baselineLabel}`,
+        `规则分流：${row.compareLabel}`,
+        `变化：${row.changeLabel}`,
+        `改善率：${row.percentLabel}`,
+      ].join('<br/>')
+    },
+  },
+  legend: { top: 4, data: ['Baseline', '规则分流'] },
+  grid: { left: 52, right: 28, top: 48, bottom: 58 },
+  xAxis: {
+    type: 'category',
+    data: primaryRows.value.map((row) => row.label),
+    axisLabel: { interval: 0 },
+  },
+  yAxis: {
+    type: 'value',
+    name: '原始值',
+    min: 0,
+    splitLine: { lineStyle: { color: '#e8edf4' } },
+  },
+  series: [
+    {
+      name: 'Baseline',
+      type: 'bar',
+      barMaxWidth: 44,
+      data: primaryRows.value.map((row) => row.baseline),
+      itemStyle: { color: '#94a3b8', borderRadius: [6, 6, 0, 0] },
+    },
+    {
+      name: '规则分流',
+      type: 'bar',
+      barMaxWidth: 44,
+      data: primaryRows.value.map((row) => row.compare),
+      itemStyle: { color: '#0160a8', borderRadius: [6, 6, 0, 0] },
+    },
+  ],
+}))
 
 const improvementRateOption = computed(() => ({
   color: ['#16a34a'],
@@ -297,8 +340,13 @@ const improvementRateOption = computed(() => ({
       return [
         row.label,
         `Baseline：${row.baselineLabel}`,
-        `Compare：${row.compareLabel}`,
-        `改善率：${row.percentLabel}`,
+        `规则分流：${row.compareLabel}`,
+        isFiniteRate(row.percent)
+          ? `${Number(row.percent) >= 0 ? '下降' : '上升'}：${formatNumber(
+              Math.abs(Number(row.percent)),
+              1,
+            )}%`
+          : '改善率：--',
       ].join('<br/>')
     },
   },
@@ -371,10 +419,6 @@ async function handleComparison() {
   }
 }
 
-function transitionLabel(row) {
-  return row ? `${row.baselineLabel} → ${row.compareLabel}` : '--'
-}
-
 function crowdLevelLabel(level) {
   return (
     {
@@ -384,6 +428,10 @@ function crowdLevelLabel(level) {
       EXTREME: '拥挤',
     }[level] || level || '--'
   )
+}
+
+function isFiniteRate(value) {
+  return value !== null && value !== undefined && Number.isFinite(Number(value))
 }
 
 function translateReason(reason) {

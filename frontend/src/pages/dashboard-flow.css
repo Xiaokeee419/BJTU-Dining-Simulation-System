@@ -242,6 +242,12 @@
   place-items: center;
 }
 
+.diversion-pending-panel {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+}
+
 .flow-empty-copy {
   margin: 20px 0 0;
   color: var(--color-subtle);
@@ -311,6 +317,10 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-top: 18px;
+}
+
+.comparison-card-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .comparison-card {
@@ -417,6 +427,10 @@
   border: 1px solid #dce7f4;
   border-radius: 10px;
   background: #f8fbff;
+}
+
+.stage-chart-grid {
+  margin-top: 22px;
 }
 
 .flow-subsection h3 {
